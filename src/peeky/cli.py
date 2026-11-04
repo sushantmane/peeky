@@ -441,6 +441,9 @@ def _resolve(path, program, line, config, tools=True):
             if "main_class" in data
             else "c"
         )
+        root = path if path.is_dir() else path.parent
+        if language in ("java", "java-attach"):
+            data = _java_paths(data, root)
         if language in ("java", "java-attach") and isinstance(data.get("bundle"), str):
             # Relative to the configuration file, wherever the command runs from (session
             # workers read a copy of the configuration from the state directory).
@@ -455,7 +458,6 @@ def _resolve(path, program, line, config, tools=True):
         if language == "rust" and is_workspace_config(data) and tools:
             # The tools the configuration leaves out are this host's (PEEKY_RUST_*, rustup).
             data = {**rust_tools(), **data}
-        root = path if path.is_dir() else path.parent
         return root, program, line, language, data
     if path.suffix == ".java" or str(program or "").endswith(".java"):
         raise ValueError(_JAVA_NEEDS_CONFIG)
@@ -524,6 +526,33 @@ def _resolve(path, program, line, config, tools=True):
     raise ValueError(
         "Cannot detect the target; pass a .py/.c/.cpp file, a Cargo crate, or --config"
     )
+
+
+def _java_paths(data, root):
+    """A Java config whose `sources` and `class_roots` may name a path inside the root by its
+    absolute path, as round 2's agents wrote them: each taken relative to the root. One
+    outside it is refused, naming the root."""
+    from peeky.errors import Refused
+
+    fixed = dict(data)
+    for key in ("sources", "class_roots"):
+        names = data.get(key)
+        if not isinstance(names, list):
+            continue
+        relative = []
+        for name in names:
+            if isinstance(name, str) and os.path.isabs(name):
+                found = os.path.relpath(os.path.realpath(name), os.path.realpath(root))
+                if found == ".." or found.startswith("../"):
+                    raise Refused(
+                        "INVALID_REQUEST",
+                        f"The config's {key} names {name}, outside the target directory "
+                        f"{root}: give the directory that holds it as the target",
+                    )
+                name = Path(found).as_posix()
+            relative.append(name)
+        fixed[key] = relative
+    return fixed
 
 
 _NATIVE_SUFFIXES = (".c", ".cpp", ".cc", ".cxx")
@@ -765,6 +794,7 @@ def _default_program(program, data, command):
 
 
 def describe(args):
+    _apply_test(args, "describe")
     root, program, _, language, data = resolve(
         args.target, args.at, args.config, binary=args.binary
     )
@@ -879,7 +909,9 @@ def describe(args):
             "Python literals: numbers, strings, bytes, True/False/None and lists/tuples/dicts/sets of them"
         )
     else:
-        target = adapter_for(language, data)
+        built = {"build": _build_command(args)} if getattr(args, "build_needed", False) else {}
+        target = adapter_for(language, data, **built)
+        _build_first(args, root, target)
         manifest["target_identity"] = target.target_identity
         runtime = target.prepare(root / program, root)
         try:
@@ -1356,6 +1388,8 @@ def probe(args):
             raise
         if isinstance(result.get("error"), dict):
             result["error"] = _remote_build_required(result["error"], args)
+    elif getattr(args.test_command, "kind", None) == "java":
+        result = _probe_java_test(args, root, request)
     else:
         result = run_probe(
             root,
@@ -1366,6 +1400,7 @@ def probe(args):
             launch_marker=args.launch_marker,
             pycache_base=args.pycache_dir,
         )
+    result = _test_warnings(result, getattr(args, "test_command", None))
     return _probe_result(args, root, result, edit, original, request.program, language)
 
 
@@ -1374,9 +1409,18 @@ def _probe_request(args):
     binary a worker must debug or None) for `peeky probe`'s arguments."""
     if args.label is not None and len(args.label) > 200:
         raise ValueError("--label is at most 200 characters")
-    root, program, line, language, data = resolve(
-        args.target, args.at, args.config, tools=args.worker is None, binary=args.binary
-    )
+    args.test_command = test = _apply_test(args, "probe")
+    java_test = test is not None and test.kind == "java"
+    if args.timeout is None:
+        from peeky.java_test import TIMEOUT_S
+
+        args.timeout = TIMEOUT_S if java_test else 60.0
+    if java_test:
+        root, program, line, language, data = _java_test_target(args)
+    else:
+        root, program, line, language, data = resolve(
+            args.target, args.at, args.config, tools=args.worker is None, binary=args.binary
+        )
     if line is None:
         raise ValueError("probe requires --at <path>:<line>")
     _python_option(args, language)
@@ -1414,6 +1458,216 @@ def _probe_request(args):
     return root, request, edit, original, language, adapter, binary
 
 
+def _apply_test(args, command):
+    """`--test`: the test command after `--` names the target (test_command, ADR 0009). It
+    sets the options the command stands for on ``args``, and its environment assignments
+    in this process's, as if typed before `peeky`. The TestCommand, or None."""
+    from peeky.errors import Refused
+
+    words = getattr(args, "test_word", None) or []
+    if not getattr(args, "test", False):
+        return None
+    from peeky.test_command import REPLACED, plan, save_config
+
+    given = [
+        "--" + name.replace("_", "-")
+        for name in REPLACED
+        if getattr(args, name, None) not in (None, [], ())
+    ]
+    if given:
+        raise Refused(
+            "INVALID_REQUEST",
+            f"--test names what runs from the test command: drop {', '.join(given)}",
+        )
+    if getattr(args, "worker", None) is not None:
+        raise Refused(
+            "UNSUPPORTED",
+            "--test runs the test here; a worker runs only what its own configuration names. "
+            "Probe on the worker with the options its configuration takes",
+            "Nothing ran. Drop --worker to run the test here, or drop --test.",
+        )
+    root = Path(args.target).resolve(strict=True)
+    if not root.is_dir():
+        raise Refused(
+            "INVALID_REQUEST",
+            "With --test, the target is the project's directory, where the test command runs",
+        )
+    at = str(getattr(args, "at", None) or "")
+    program = at.rpartition(":")[0] if re.fullmatch(r".+:[1-9][0-9]{0,6}", at) else at or None
+    test = plan(words, root, program)
+    if test.kind == "java" and command != "probe":
+        raise Refused(
+            "UNSUPPORTED",
+            f"--test starts a Java test for a probe only ({test.words[0]}): a session's test "
+            "would have to outlive this command. Probe with --test, or start the test waiting "
+            "for a debugger and attach a session with a config (docs/lang/java.md)",
+            "Nothing ran. Use `peeky probe` with --test.",
+        )
+    os.environ.update(dict(test.environment))
+    if test.kind == "python":
+        args.python, args.run, args.run_module = test.python, test.run, test.module
+    elif test.kind == "binary":
+        args.binary = test.binary
+    elif test.kind == "rust":
+        args.config = str(save_config(test.config, _private_dir("tests")))
+        args.build_needed = True
+    args.arg = list(test.arguments)
+    progress = _progress(args)
+    if progress is not None and command != "describe":
+        progress(f"test: {test.shown}")
+    return test
+
+
+def _java_test_target(args):
+    """(root, program, line, language, data) of a Java `--test` probe: the attached JVM's,
+    with no config, which Peeky makes once the test's JVM waits (_probe_java_test)."""
+    from peeky.errors import Refused
+    from peeky.java import bundle_directory
+    from peeky.java_setup import default_bundle
+
+    root = Path(args.target).resolve(strict=True)
+    at = str(args.at)
+    location, _, number = at.rpartition(":")
+    if not location or not re.fullmatch(r"[1-9][0-9]{0,6}", number):
+        raise ValueError("--at must be <path>:<line>, the .java file to stop in and its line")
+    program = _confined(root, location, "java-attach")
+    if not program.endswith(".java"):
+        raise Refused(
+            "INVALID_REQUEST",
+            f"A Java --test stops in a .java file of the project, not {program}",
+        )
+    # Before the build runs: without Peeky's adapter, nothing could attach.
+    bundle_directory(default_bundle())
+    return root, program, int(number), "java-attach", None
+
+
+def _probe_java_test(args, root, request):
+    """A Java `--test` probe (java_test, ADR 0009): run the test command with Peeky's agent
+    added to its test JVM, attach to that JVM once it waits, probe, then let the build end
+    until the deadline, where Peeky stops it. The result says what the test did (`test`)."""
+    from dataclasses import replace
+
+    from peeky import java_test
+    from peeky.errors import classify
+    from peeky.java_attach import JavaAttachTarget
+    from peeky.java_setup import default_bundle
+
+    progress = _progress(args)
+    started = time.monotonic()
+    # --timeout covers it all: the probe ends FINISH_MIN_S before the deadline, so the build
+    # may end on its own, and the build is stopped at the deadline (java_test.finish).
+    deadline = started + request.timeout
+    probed = deadline - java_test.FINISH_MIN_S
+    if request.timeout <= java_test.PROBE_MIN_S + java_test.FINISH_MIN_S:
+        raise ValueError(
+            f"A Java --test's --timeout covers the build, at least {java_test.PROBE_MIN_S:g} s "
+            f"of probing and {java_test.FINISH_MIN_S:g} s for the build to end: give more than "
+            f"{java_test.PROBE_MIN_S + java_test.FINISH_MIN_S:g} s (the default is "
+            f"{java_test.TIMEOUT_S:g})"
+        )
+    launch = java_test.prepare(args.test_command.words, _private_dir("tests"))
+    java_test.start(launch, os.getcwd())
+    if progress is not None:
+        progress(f"started {launch.tool}; its output goes to {launch.log}")
+    result = None
+    try:
+        found = java_test.find_jvm(launch, probed - java_test.PROBE_MIN_S, progress)
+        if found is None:
+            args.no_save = True
+            result = _unrun(request, started, "no-stop", _no_test_jvm(launch))
+        else:
+            pid, port = found
+            if progress is not None:
+                progress(f"the test JVM (pid {pid}) waits on port {port}; attaching")
+            target = JavaAttachTarget(
+                bundle=default_bundle(),
+                port=port,
+                sources=(request.program,),
+                class_roots=java_test.class_roots(root, request.program, launch),
+                launched=(pid, port),
+            )
+            left = max(1.0, probed - time.monotonic())
+            result = run_probe(
+                root, replace(request, timeout=left), adapter=target, progress=progress
+            )
+    except TimeoutError as exc:
+        args.no_save = True
+        result = _unrun(request, started, "timeout", classify(exc, session_closed=True))
+    except Exception as exc:
+        result = _unrun(request, started, "failed", classify(exc, session_closed=True))
+        result["refused_before_launch"] = True
+    finally:
+        # The test runs on after the probe, until the deadline at most.
+        finished = java_test.finish(launch, deadline, progress)
+        if result is not None:
+            result["test"] = finished
+            if launch.notes:
+                result["warnings"] = [*(result.get("warnings") or []), *launch.notes]
+    return result
+
+
+def _unrun(request, started, status, error):
+    """A Java `--test` probe's result where the debugger never ran, as a probe's own."""
+    from dataclasses import asdict
+
+    probe = {
+        **asdict(request),
+        "set": [list(change) for change in request.set],
+        "set_at": [list(point) for point in request.set_at],
+    }
+    probe.pop("edit"), probe.pop("expect_inputs")
+    return {
+        "probe": probe,
+        "status": status,
+        "error": error,
+        "warnings": [],
+        "hits": 0,
+        "pauses_ms": [],
+        "by_hit": [],
+        "rows": [],
+        "interventions": [],
+        "seconds": round(time.monotonic() - started, 3),
+    }
+
+
+def _no_test_jvm(launch):
+    """The error of a Java test command that ended before any JVM waited for Peeky."""
+    exited = launch.process.returncode
+    hint = {
+        "maven": "Check that the -Dtest filter names a test of the module, and that the "
+        "module's surefire forks a JVM (forkCount isn't 0 in its pom.xml)",
+        "gradle": "Check that --tests names a test of the project, and that the build reached "
+        "its test task",
+        "java": "Check that the command starts the JVM: its output is in the log",
+        "javac": "Check that the command starts javac: its output is in the log",
+    }[launch.tool]
+    return {
+        "code": "NO_STOP",
+        "message": (
+            f"The test command ended (exit code {exited}) before any JVM started with "
+            f"Peeky's debug agent, so nothing was attached: {launch.tool} ran no test "
+            "JVM, or failed before it (its last lines are in `test`)"
+        ),
+        "hint": hint,
+        "retryable": False,
+        "session_closed": True,
+    }
+
+
+def _test_warnings(result, test):
+    """The test command's notes among a result's warnings, and what it ran as."""
+    if test is None or not isinstance(result, dict) or "test" in result:
+        return result
+    result["test"] = {
+        "command": test.shown,
+        "kind": test.kind,
+        **({"config": test.config} if test.config is not None else {}),
+    }
+    if test.notes:
+        result["warnings"] = [*(result.get("warnings") or []), *test.notes]
+    return result
+
+
 def _build_command(args):
     """The `peeky build` command for this command's target and --config, as typed."""
     from peeky.rust_build import build_command
@@ -1424,9 +1678,19 @@ def _build_command(args):
 def _build_first(args, root, adapter):
     """`--build`: build a Rust workspace (`peeky build`) under the build's own deadline,
     before anything else runs. Without it, a probe or session never builds."""
+    from peeky.rust_build import BUILD_TIMEOUT_S, BuildRequired, RustWorkspaceTarget
+
+    if getattr(args, "build_needed", False) and isinstance(adapter, RustWorkspaceTarget):
+        # `--test`: build only when no build of its configuration is current.
+        try:
+            adapter.current(root)
+            return None
+        except BuildRequired as exc:
+            if progress := _progress(args):
+                progress(f"building: {str(exc).split(':')[0]}")
+        args.build = True
     if not getattr(args, "build", False):
         return None
-    from peeky.rust_build import BUILD_TIMEOUT_S, RustWorkspaceTarget
 
     if getattr(args, "worker", None) is not None:
         # The worker builds from its own configuration, as `peeky build --worker` does.
@@ -1437,6 +1701,9 @@ def _build_first(args, root, adapter):
             "targets are built by every probe"
         )
     else:
+        # A build refused for provenance (a git index refreshed while it ran, say) isn't
+        # built again here: a second build in the same target directory may reuse what the
+        # first one's build scripts made of the changed bytes (#486).
         result = adapter.build(
             root, deadline=time.monotonic() + BUILD_TIMEOUT_S, progress=_progress(args)
         )
@@ -1465,6 +1732,18 @@ def _progress(args):
 def _probe_result(args, root, result, edit, original, program, language):
     if edit:
         _bind_candidate(result, original, edit, program)
+    if (
+        language == "java-attach"
+        and getattr(args, "test_command", None) is None
+        and (result.get("error") or {}).get("code") == "NO_STOP"
+    ):
+        # 30 of round 2's probes in 16 attempts ended so: the line didn't run while Peeky was
+        # attached (another JVM, another classpath, or the line ran before the attach).
+        result["error"]["hint"] += (
+            " An attached JVM runs what started it, which may not run the line, or ran it "
+            "before the attach: let Peeky start the test with `--test -- <the test command>` "
+            "(docs/FIRST.md)."
+        )
     if misplaced := _misplaced_options(args):
         if (result.get("error") or {}).get("code") == "NO_STOP":
             result["error"]["hint"] = misplaced + "."
@@ -1785,6 +2064,8 @@ def _probe_text(result, quiet=False):
     if warnings != list(result.get("warnings", ())):
         result = {**result, "warnings": warnings}
     text = _table(result, short_names=short_names, sent_before=sent_before)
+    if (test := result.get("test")) and "output_tail" in test:
+        text += "\n" + _test_text(test)
     if result.get("refused_before_launch"):
         return text
     if candidate := result.get("candidate"):
@@ -1828,6 +2109,20 @@ def _probe_text(result, quiet=False):
                 else f"\ncompare: {compare['hint']}"
             )
     return text
+
+
+def _test_text(test):
+    """What a Java `--test` probe's test did: how it ended, and its last lines."""
+    ended = (
+        f"stopped: {test['stopped']}"
+        if test.get("stopped")
+        else f"exited with {test.get('exit_code')}"
+    )
+    jvm = test.get("jvm")
+    attached = f"; its test JVM: pid {jvm['pid']}, port {jvm['port']}" if jvm else ""
+    lines = [f"test: `{test['command']}` {ended}{attached}", f"test output: {test['log']}"]
+    lines += [f"  {line}" for line in split_lines(test.get("output_tail") or "")[-15:]]
+    return "\n".join(lines)
 
 
 def sql(args):
@@ -3544,6 +3839,7 @@ def _stop_worker(process):
 
 
 def _start(args):
+    test = _apply_test(args, "session start")
     root, program, line, language, data = resolve(
         args.target, args.at, args.config, tools=args.worker is None, binary=args.binary
     )
@@ -3560,6 +3856,7 @@ def _start(args):
                 args, root, program, line, language, max_pause, _binary_of(root, data)
             )
         state = _start_local(args, root, program, line, language, data, max_pause)
+        state = _test_warnings(state, test)
     except BaseException:
         # Failed or interrupted (e.g. SIGTERM from a tool timeout) before the session
         # existed: give the name back. Once saved, the session stays for `session wait`.
@@ -5751,6 +6048,12 @@ def main(argv=None, _job=False, _edits=None):
 
 # The help text's first line; not read from the docstring, which `python -OO` drops.
 DESCRIPTION = "`peeky`: a standalone debugger tool that agents, harnesses and humans call."
+FIRST_QUESTION = (
+    "Your first question, from the project's root: peeky probe . --at FILE:LINE --capture a,b "
+    "--test -- <the command that runs the failing test> (docs/FIRST.md)"
+)
+# `--set-at '966@1 url=x'` typed as one word: its location, a space, then NAME=VALUE.
+_SET_AT_WORD = re.compile(r"((?:\S+:)?[0-9]+(?:@(?:[0-9]+|all))?)\s+([^\s=]+\s*=.*)", re.S)
 
 
 def _main(argv, _job, _edits):
@@ -5758,7 +6061,15 @@ def _main(argv, _job, _edits):
 
     keep_children_waitable()  # An inherited ignored SIGCHLD reaps adapters
     argv = list(sys.argv[1:] if argv is None else argv)
-    if "--" in argv and (argv[:1] == ["probe"] or argv[:2] == ["session", "start"]):
+    if (
+        "--" in argv
+        and (argv[:1] in (["probe"], ["describe"]) or argv[:2] == ["session", "start"])
+        and "--test" in argv[: argv.index("--")]
+    ):
+        # `peeky probe . --at f.py:5 --test -- python -m pytest t.py`: the test command's words.
+        split = argv.index("--")
+        argv = argv[:split] + [f"--test-word={value}" for value in argv[split + 1 :]]
+    elif "--" in argv and (argv[:1] == ["probe"] or argv[:2] == ["session", "start"]):
         # `peeky probe t --at 5 -- a b c` passes a, b and c to the program.
         split = argv.index("--")
         argv = argv[:split] + [f"--arg={value}" for value in argv[split + 1 :]]
@@ -5768,7 +6079,13 @@ def _main(argv, _job, _edits):
         argv = argv[: split - 1] + (
             [f"--check-argv={word}" for word in argv[split + 1 :]] or ["--check-argv="]
         )
-    parser = argparse.ArgumentParser(prog="peeky", description=DESCRIPTION)
+    for at in reversed(range(len(argv) - 1)):
+        # Round 2's agents wrote `--set-at 'LINE NAME=VALUE'` as one word, 9 times: it is
+        # taken where the word is a location, a space, then NAME=VALUE. A path with a space
+        # still needs the two words.
+        if argv[at] == "--set-at" and (found := _SET_AT_WORD.fullmatch(argv[at + 1])):
+            argv[at + 1 : at + 2] = [found[1], found[2]]
+    parser = argparse.ArgumentParser(prog="peeky", description=DESCRIPTION, epilog=FIRST_QUESTION)
     add_version(parser)
     commands = parser.add_subparsers(dest="command", required=True)
 
@@ -5812,6 +6129,17 @@ def _main(argv, _job, _edits):
             "(900 s); without it, nothing is built",
         )
 
+    def test_option(sub):
+        sub.add_argument(
+            "--test",
+            action="store_true",
+            help="The words after `--` are the command that runs the failing test, as you "
+            "would type it here (python -m pytest …, cargo test …, ctest -R NAME, ./prog ARGS): "
+            "Peeky reads it, runs the target it names under the debugger, with no config, and "
+            "says where that run differs from the command's",
+        )
+        sub.add_argument("--test-word", action="append", default=[], help=argparse.SUPPRESS)
+
     def evidence_store(sub):
         sub.add_argument(
             "--store", help="Evidence database (default: $PEEKY_STATE_DIR/evidence/evidence.db)"
@@ -5837,9 +6165,14 @@ def _main(argv, _job, _edits):
     sub.add_argument("--at", help="Program path (for multi-file targets)")
     binary_option(sub)
     python_option(sub)
+    test_option(sub)
     # Accepted everywhere: describe prints no progress, so it changes nothing here.
     sub.add_argument("--quiet", action="store_true", help=argparse.SUPPRESS)
-    sub = commands.add_parser("probe", help="One stateless question: stop, capture, set, report")
+    sub = commands.add_parser(
+        "probe",
+        help="One stateless question: stop, capture, set, report",
+        description=FIRST_QUESTION,
+    )
     probe_parser = sub
     common(sub)
     sub.add_argument("--at", required=True, help="<line> or <path>:<line>")
@@ -5922,9 +6255,8 @@ def _main(argv, _job, _edits):
     sub.add_argument(
         "--timeout",
         type=float,
-        default=60,
-        help="Seconds for the whole probe, build included (default 60); then it stops the "
-        "program and fails with TIMEOUT",
+        help="Seconds for the whole probe, build included (default 60; 300 for a Java --test, "
+        "its build too); then it stops the program and fails with TIMEOUT",
     )
     sub.add_argument(
         "--until",
@@ -5938,6 +6270,7 @@ def _main(argv, _job, _edits):
         "--quiet", action="store_true", help="No progress messages on stderr, nor one-time notes"
     )
     build_option(sub)
+    test_option(sub)
     sub.add_argument("--label", help="Tag this run in the evidence store (e.g. input=empty)")
     sub.add_argument(
         "--no-save", action="store_true", help="Do not record this run in the evidence store"
@@ -6013,6 +6346,7 @@ def _main(argv, _job, _edits):
         help="Run on to the Nth stop at the breakpoint (state lines show `hit N`)",
     )
     build_option(start)
+    test_option(start)
     start.add_argument(
         "--max-pause",
         type=float,

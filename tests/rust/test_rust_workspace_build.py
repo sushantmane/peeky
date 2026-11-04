@@ -1669,3 +1669,100 @@ def test_a_binary_an_integration_test_names_while_it_compiles_is_its_runs_own(wo
     again = built()
     assert again.parent != newer.parent
     assert ran(again) == ("3", again.with_name("app"))
+
+
+@pytest.mark.timeout(900)
+def test_the_test_command_makes_the_config_and_builds_it_when_needed(
+    workspace, capsys, monkeypatch
+):
+    # `--test -- cargo run -p app` (ADR 0009): Peeky reads the config from the command,
+    # analysing the --at file's package, and builds it where no build of it is current.
+    monkeypatch.chdir(workspace)
+    argv = ["probe", ".", "--at", "util/src/lib.rs:3", "--capture", "x", "--json", "--test"]
+    code = main([*argv, "--", "cargo", "run", "-p", "app"])
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+    read(code, result)
+    assert result["test"] == {
+        "command": "cargo run -p app",
+        "kind": "rust",
+        "config": {
+            "workspace": ".",
+            "analyse": ["util"],
+            "run": {"bin": "app", "package": "app"},
+            "vendor": "vendor",
+        },
+    }
+    assert "peeky: building: No current Peeky build" in captured.err
+    # The same command again: the build is current, and nothing is built.
+    code = main([*argv, "--", "cargo", "run", "-p", "app"])
+    captured = capsys.readouterr()
+    read(code, json.loads(captured.out))
+    assert "building" not in captured.err
+    # An integration test, with its filter: `flows` calls double(3).
+    code = main([*argv, "--", "cargo", "test", "--test", "flow", "flows", "--", "--exact"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result
+    assert [r["value"] for r in result["rows"] if r["selector"] == "x"] == ["3"]
+    assert result["test"]["config"]["run"] == {"test": "flow", "package": "util"}
+    # Peeky says it built one package where Cargo would have built every member, and that
+    # the test ran in its environment, not this one.
+    assert any("Cargo may unify more features" in w for w in result["warnings"])
+    assert any(w.startswith("Peeky builds the test with Cargo") for w in result["warnings"])
+    # What would change Cargo's build or run is refused before anything runs: a runner
+    # for this host, and a RUSTFLAGS of more than lints in the environment.
+    (workspace / ".cargo").mkdir(exist_ok=True)
+    config = workspace / ".cargo/config.toml"
+    kept = config.read_text() if config.exists() else None
+    config.write_text((kept or "") + "\n[target.'cfg(all())']\nrunner = \"env\"\n")
+    try:
+        code = main([*argv, "--", "cargo", "run", "-p", "app"])
+        error = json.loads(capsys.readouterr().out)["error"]
+        assert code == 2 and "target.cfg(all()).runner` (env)" in error["message"], error
+    finally:
+        config.write_text(kept) if kept is not None else config.unlink()
+    monkeypatch.setenv("RUSTFLAGS", "--cfg peeky_repro")
+    code = main([*argv, "--", "cargo", "run", "-p", "app"])
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert code == 2 and "your environment's RUSTFLAGS ('--cfg peeky_repro')" in error["message"]
+    monkeypatch.delenv("RUSTFLAGS")
+    # A session takes it too.
+    code = main(
+        ["session", "start", ".", "--at", "util/src/lib.rs:3", "--name", "tested", "--json"]
+        + ["--test", "--", "cargo", "run", "-p", "app"]
+    )
+    state = json.loads(capsys.readouterr().out)
+    try:
+        assert code == 0 and state["state"] == "stopped", state
+        code, rows = run(capsys, "session", "get", "x", "--name", "tested")
+        assert code == 0 and [row["value"] for row in rows] == ["1"], rows
+    finally:
+        run(capsys, "session", "close", "--name", "tested")
+
+
+@pytest.mark.timeout(300)
+def test_the_test_command_runs_on_peekys_toolchain_or_is_refused(workspace, capsys, monkeypatch):
+    # Peeky builds with its pinned toolchain: a test command whose cargo, or the rustc rustup
+    # picks for it in the root, is another is refused before anything is built.
+    other = shutil.which("rustup") and subprocess.run(
+        ["rustup", "which", "--toolchain", "nightly", "cargo"], capture_output=True, text=True
+    )
+    if not other or other.returncode != 0:
+        pytest.skip("needs rustup with a nightly toolchain installed")
+    monkeypatch.chdir(workspace)
+    argv = ["probe", ".", "--at", "util/src/lib.rs:3", "--capture", "x", "--json", "--test", "--"]
+    code = main([*argv, other.stdout.strip(), "run", "-p", "app"])
+    captured = capsys.readouterr()
+    error = json.loads(captured.out)["error"]
+    assert code == 2 and "The test command's cargo is Rust" in error["message"], error
+    assert "-nightly" in error["message"] and os.environ["PEEKY_RUST_CARGO"] in error["message"]
+    assert "building" not in captured.err
+    (workspace / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "nightly"\n')
+    try:
+        code = main([*argv, "cargo", "run", "-p", "app"])
+        captured = capsys.readouterr()
+        error = json.loads(captured.out)["error"]
+        assert code == 2 and "-nightly" in error["message"], error
+        assert "building" not in captured.err
+    finally:
+        (workspace / "rust-toolchain.toml").unlink()

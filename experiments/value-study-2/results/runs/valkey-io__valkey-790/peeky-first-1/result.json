@@ -235,7 +235,7 @@
   "[unproven]": 2,
   "withheld": 1
  },
- "peeky_values_printed": 1,
+ "peeky_values_printed": 30,
  "contaminated": false,
  "final_message": "Fixed the incorrect assumption that the first shard member identifies its active primary. After failover, that member can still be the failed master. Peeky stopped at `cluster_legacy.c:5675` and showed `numslots=0` and `slot_info_pairs=NULL` (heap liveness marked unproven). The fix selects the member that actually owns slots; added regression coverage includes failover, rejoining, and genuinely slotless shards under RESP2 and RESP3.",
  "assistant_messages": [

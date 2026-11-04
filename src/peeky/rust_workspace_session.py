@@ -377,7 +377,9 @@ def prepare_session(target, program, root, *, deadline=None):
             raise ValueError(
                 f"Peeky stops only in the analysed packages' files ({packages}), as their "
                 f"build read them: {relative} is none of those. Probe a line there, or add "
-                'its package to "analyse" and build again'
+                'its package to "analyse" and build again. An analysed package\'s file its '
+                "build didn't read may be behind a `#[cfg]` the build left off, such as a "
+                'feature: name it in "features" (with --test, the command\'s --features)'
             )
         if len(units) > 1:
             crates = ", ".join(f"`{unit['crate']}`" for unit in units)

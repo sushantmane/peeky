@@ -2636,6 +2636,10 @@ class DebugWorker:
                         "The debuggee did not start: the debugger never initialized it "
                         f"within the launch's {round(budget, 1)} s"
                     ) from exc
+                if check_attached := getattr(runtime, "check_attached", None):
+                    # An attached JVM that Peeky started: proven to be the one attached to,
+                    # before it runs (java_test, ADR 0009).
+                    check_attached()
                 if check_lines := getattr(runtime, "check_breakpoint_lines", None):
                     check_lines(program, args.get("breakpoints", []))
                 points = self.dap.request(

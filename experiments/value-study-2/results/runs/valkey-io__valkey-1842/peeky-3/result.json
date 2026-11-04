@@ -181,7 +181,7 @@
  "peeky_mentions_in_commands": 7,
  "peeky_withheld_markers": 0,
  "peeky_withheld_by_marker": {},
- "peeky_values_printed": 6,
+ "peeky_values_printed": 0,
  "contaminated": false,
  "final_message": "Fixed the crash: `ACL LOAD` dereferenced a NULL user on the replica\u2019s primary connection, which intentionally bypasses ACLs. Reloading now skips ACL-exempt connections while updating ordinary clients normally. Added regression coverage for user reloads and continued replication.",
  "assistant_messages": [
