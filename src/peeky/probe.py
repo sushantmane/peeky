@@ -5709,6 +5709,35 @@ def run_probe(
                     "its arguments and input. Otherwise pick a line the program executes; "
                     "see `peeky describe`."
                 )
+            moved = (placed.get(line) or {}).get("line")
+            level = optimization_level(result.get("target_identity"))
+            if type(moved) is int and moved != line:
+                # The debugger's one place for the line may be code that never ran (GCC's
+                # `.cold` part of an optimized function): the line's own may have run.
+                message += (
+                    f". The debugger placed the breakpoint for line {line} on code of line "
+                    f"{moved}, so the program may have run line {line} without a stop there"
+                )
+                if code == 0 and not wrote:
+                    hint = (
+                        f"Line {line} may have no code of its own, or the debugger placed its "
+                        "breakpoint only on code that did not run (an optimized build's "
+                        "split-off part): probe another line from `peeky describe`, or an "
+                        "unoptimized build."
+                    )
+            elif level and code == 0 and not wrote:
+                # LLDB may place an optimized line's breakpoint only on its split-off part
+                # (GCC -O2's `main.cold` on x86-64), which runs only on an error path.
+                message += (
+                    f". In an optimized build ({level}) the debugger may place a line's "
+                    "breakpoint only on code that does not run, so the program may have run "
+                    f"line {line} without a stop there"
+                )
+                hint = (
+                    "Probe another line from `peeky describe`, or an unoptimized build: the "
+                    "debugger may have placed this line's breakpoint only on code that did not "
+                    "run."
+                )
             result["error"] = {
                 "code": "NO_STOP",
                 "message": message,

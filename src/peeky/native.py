@@ -408,6 +408,10 @@ class LineTable(NamedTuple):
     replaced: frozenset
     epilogues: frozenset
     prologues: frozenset
+    # Where code of no line of the declared sources starts: a row of line 0 (clang's
+    # x86-64 code ahead of a line's first row, a landing pad's first instruction) or of
+    # another file, as LLDB keeps the rows of its address.
+    unlined: frozenset = frozenset()
 
 
 def _line_key(workspace, declared, rust):
@@ -448,7 +452,9 @@ class _LineParser:
         self.version = None
         self.rows = []
         self.replaced, self.epilogues, self.prologues = set(), set(), set()
-        # The rows of one address in a sequence: (address, name, line, statement, ending).
+        self.unlined = set()
+        # The rows of one address in a sequence: (address, name, line, statement, ending,
+        # whether it ends its sequence).
         self.group = []
         # The offset each table's header names, in order.
         self.headers = []
@@ -458,7 +464,7 @@ class _LineParser:
         if not group:
             return
         *earlier, last = group
-        for address, name, number, statement, ending in earlier:
+        for address, name, number, statement, ending, _ in earlier:
             if name is None or ending:
                 continue
             if not last[4] and (name, number) == last[1:3]:
@@ -468,6 +474,8 @@ class _LineParser:
                 self.replaced.add((address, name, number))
         if last[1] is not None and not last[4]:
             rows.append(last[:3])
+        elif not last[5]:
+            self.unlined.add(last[0])
         group.clear()
 
     def feed(self, lines):
@@ -515,7 +523,9 @@ class _LineParser:
                     raise ValueError("Native line exceeds declared source length")
                 if group and group[0][0] != address:
                     self.flush()
-                group.append((address, name, number, "is_stmt" in fields, ending))
+                group.append(
+                    (address, name, number, "is_stmt" in fields, ending, "end_sequence" in fields)
+                )
                 if "end_sequence" in fields:
                     # The next sequence may start at this address: its rows are its own.
                     self.flush()
@@ -568,6 +578,7 @@ class _LineParser:
             frozenset(self.replaced),
             frozenset(self.epilogues),
             frozenset(self.prologues),
+            frozenset(self.unlined),
         )
 
 
@@ -601,6 +612,7 @@ def _line_rows(
     epilogues=None,
     rust=False,
     prologues=None,
+    unlined=None,
 ):
     """Rows of the LLVM DWARF4 line-table dump for declared sources: (address, name, line).
     ``text``: the dump's text, or the LineTable ``read_line_table`` read of it.
@@ -611,7 +623,8 @@ def _line_rows(
     runs no code. It is skipped if it is not a statement; a statement row is kept,
     since a breakpoint can be set on its line, and added to ``replaced`` when given.
     ``epilogues``, when given, gets the address of each row that begins an epilogue;
-    ``prologues``, that of each row marked `prologue_end`, in any file.
+    ``prologues``, that of each row marked `prologue_end`, in any file; ``unlined``, the
+    LineTable's ``unlined``.
     """
     if isinstance(text, LineTable):
         table = text
@@ -627,6 +640,7 @@ def _line_rows(
         (replaced, table.replaced),
         (epilogues, table.epilogues),
         (prologues, table.prologues),
+        (unlined, table.unlined),
     ):
         if found is not None:
             found.update(kept)
@@ -2115,6 +2129,7 @@ def _function_entries(
     rust=False,
     prologues=None,
     code=None,
+    unlined=None,
 ):
     """(dies, {root: entry}, {root: {line: span}}, files, {root: {(source, line): span}})
     for functions in declared sources; see function_scopes. ``replaced``: see
@@ -2122,7 +2137,8 @@ def _function_entries(
     highest address of a function's rows on a line. The first mapping keeps rows of the
     function's own file (describe); the last keeps every row the function runs, in any
     declared file (clang runs a header struct's member initializers in its caller).
-    ``prologues``, when given, gets _prologue_windows. ``code``, when given (a dict),
+    ``prologues``, when given, gets _prologue_windows; ``unlined``, the line table's
+    ``unlined`` (_line_rows). ``code``, when given (a dict),
     gets "dies", a CodeDie for every function and inlined call with code, placed or not,
     and "lines", for each (source, line) of the program's rows, the roots of the deepest
     of them whose code holds a row there (None for one Peeky cannot place)."""
@@ -2142,6 +2158,7 @@ def _function_entries(
             epilogues=epilogues,
             rust=rust,
             prologues=marks,
+            unlined=unlined,
         )
     )
     addresses = [row[0] for row in rows]
@@ -2829,10 +2846,18 @@ def local_declarations(info, line_text, workspace, declared, prologues=None, cod
     ``code``, _function_entries's code."""
     from peeky.fields import local_types, referred_locals
 
-    epilogues = set()
+    epilogues, unlined = set(), set()
     dies, functions, _, files, runs, addresses = _function_entries(
-        info, line_text, workspace, declared, epilogues=epilogues, prologues=prologues, code=code
+        info,
+        line_text,
+        workspace,
+        declared,
+        epilogues=epilogues,
+        prologues=prologues,
+        code=code,
+        unlined=unlined,
     )
+    unlined = sorted(unlined)
     workspace = Path(workspace).resolve()
     classes = _local_classes(dies)
     table = []
@@ -2924,6 +2949,18 @@ def local_declarations(info, line_text, workspace, declared, prologues=None, cod
                 "span": (first, max(own)) if first is not None and own else None,
                 # Every row it runs, by address: (address, source, line).
                 "order": tuple(ordered),
+                # Where its code of no line of the program starts (_line_rows ``unlined``).
+                "unlined": tuple(
+                    sorted(
+                        {
+                            address
+                            for low, high in ranges
+                            for address in unlined[
+                                bisect.bisect_left(unlined, low) : bisect.bisect_left(unlined, high)
+                            ]
+                        }
+                    )
+                ),
                 "classes": classes.get(root, ()),
                 "types": local_types(dies, entry["bodies"], through=True),
                 # Its locals the frame reaches through a pointer.
@@ -4195,7 +4232,7 @@ def control_sources(instructions, low, high, architecture):
     return found
 
 
-def runs_into(order, address, lines, sources, entries=frozenset()):
+def runs_into(order, address, lines, sources, entries=frozenset(), unlined=()):
     """Whether control comes to ``address``, the first row of the declaration line
     ``lines`` ((source, line)), only past that declaration (True): every way in from
     below is code of another line (another file's, or a later one's) that falls or jumps
@@ -4205,7 +4242,13 @@ def runs_into(order, address, lines, sources, entries=frozenset()):
     ``loop_targets`` judges). None otherwise: both kinds, no way in, one Peeky cannot
     follow (control_sources' None), an exception's: ``address`` is among ``entries``
     (landing_pads; None: unknown), or no ``sources`` for it. ``order``: the function's
-    rows, (address, source, line) by address (local_declarations)."""
+    rows, (address, source, line) by address (local_declarations).
+
+    Code of no line (``unlined``: where it starts, local_declarations) is no line's
+    code: control is followed back through it to the ways into it (clang at -O0 on
+    x86-64 sets up a call's argument just before its line's first row, as line 0, which
+    a jump from an earlier line reaches), each judged so; a jump back into it, or an
+    exception's way in, gives None."""
     if (
         sources is None
         or address not in sources
@@ -4215,11 +4258,29 @@ def runs_into(order, address, lines, sources, entries=frozenset()):
     ):
         return None
     kinds, back = set(), False
-    for origin in sources[address]:
+    pending, seen = [(origin, False) for origin in sources[address]], {address}
+    while pending:
+        origin, traced = pending.pop()
+        if origin in seen:
+            continue
+        seen.add(origin)
+        if len(seen) > MAX_TRACED:
+            return None
         if origin >= address:
+            if traced:
+                # Back into the code of no line before the stop: a loop that
+                # ``loop_targets`` does not see.
+                return None
             back = True
             continue
         index = bisect.bisect_right(order, origin, key=lambda row: row[0]) - 1
+        start = bisect.bisect_right(unlined, origin) - 1
+        if start >= 0 and (index < 0 or unlined[start] >= order[index][0]):
+            # Code of no line: where control comes to it from.
+            if origin not in sources or None in sources[origin] or origin in entries:
+                return None
+            pending.extend((each, True) for each in sources[origin])
+            continue
         if index < 0:
             return None
         _, source, line = order[index]
@@ -4227,6 +4288,10 @@ def runs_into(order, address, lines, sources, entries=frozenset()):
     if kinds == {False} or (not kinds and back):
         return False
     return True if kinds == {True} and not back else None
+
+
+# The most instructions runs_into follows back through code of no line.
+MAX_TRACED = 4096
 
 
 # The bytes of one exception-table section Peeky reads, at most, and the records.
@@ -12870,7 +12935,12 @@ class NativeSession:
                 except (OSError, ValueError, TypeError, struct.error, IndexError):
                     self.unwinder_entries = None
             into[address] = runs_into(
-                function.get("order", ()), address, lines, sources, self.unwinder_entries
+                function.get("order", ()),
+                address,
+                lines,
+                sources,
+                self.unwinder_entries,
+                function.get("unlined", ()),
             )
             if sources is None:
                 self.__dict__.setdefault("unread_code", set()).add(address)

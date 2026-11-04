@@ -786,11 +786,19 @@ def test_a_declaration_lines_first_row_after_another_lines_code_is_only_preceded
         ("refill", "bucket.c", 8): {base + 0x430},
     }
     assert take["preceded"] == {("now", "bucket.c", 11): {base + 0x440}}
+    assert take["unlined"] == ()
     # Without the landing pad, line 11's first row is a start.
     info, dump = declaration_dumps(tmp_path)
     [take] = local_declarations(info, dump, tmp_path, ("bucket.c",))
     assert take["starts"][("now", "bucket.c", 11)] == {base + 0x440}
     assert take["preceded"] == {}
+    # Code of no line (line 0) after the landing pad: still only preceded, and where that
+    # code starts is kept for the stop's disassembly to follow control through it.
+    rows = [(0x400, 5), (0x410, 6), (0x420, 7), (0x430, 8), (0x438, 12), (0x43C, 0)]
+    info, dump = declaration_dumps(tmp_path, [*rows, (0x440, 11), (0x460, 12), (0x500, 0)])
+    [take] = local_declarations(info, dump, tmp_path, ("bucket.c",))
+    assert take["preceded"] == {("now", "bucket.c", 11): {base + 0x440}}
+    assert take["unlined"] == (base + 0x43C,)
 
 
 @pytest.mark.parametrize(
@@ -1287,6 +1295,51 @@ def test_control_comes_to_a_line_only_past_its_declaration_on_every_way_in():
     assert runs_into(order, 0x6FC, lines, {0x6FC: {0x620}}, frozenset({0x6FC})) is None
     assert runs_into(order, 0x6FC, lines, {0x6FC: {0x6F8}}, None) is None
     assert runs_into(order, 0x6FC, lines, {0x6FC: {0x6F8}}, frozenset({0x6E4})) is True
+
+
+def test_control_is_followed_back_through_code_of_no_line():
+    from peeky.native import runs_into
+
+    # clang at -O0 on x86-64: line 25's call sets up its argument (`leaq …, %rdi`, 0x6F8)
+    # as line 0, just past line 29's landing pad (0x6E4), which ends in a jump; line 22's
+    # loop exit jumps to it. That code is no line's: line 29's row does not run into
+    # line 25, line 22's jump enters it.
+    order = (
+        (0x610, "g.cpp", 22),
+        (0x628, "g.cpp", 23),
+        (0x6E4, "g.cpp", 29),
+        (0x6FC, "g.cpp", 25),
+        (0x700, "g.cpp", 26),
+    )
+    lines, unlined = {("g.cpp", 25)}, (0x6F8,)
+    pads = frozenset({0x6E4})
+    sources = {0x6FC: {0x6F8}, 0x6F8: {0x620}}
+    assert runs_into(order, 0x6FC, lines, sources, pads, unlined) is False
+    # Taken for line 29's code, it would run into line 25 past its declaration.
+    assert runs_into(order, 0x6FC, lines, sources, pads) is True
+    # Through several instructions of no line, to a later line's code that falls in.
+    deep = {0x6FC: {0x6FA}, 0x6FA: {0x6F8}, 0x6F8: {0x6F4}}
+    assert runs_into(order, 0x6FC, lines, deep, pads, unlined) is True
+    # Both kinds of way in, or one that cannot be followed: unknown.
+    assert (
+        runs_into(order, 0x6FC, lines, {0x6FC: {0x6F8}, 0x6F8: {0x620, 0x6F0}}, pads, unlined)
+        is None
+    )
+    for ways in ({0x620, None}, set()):
+        assert runs_into(order, 0x6FC, lines, {0x6FC: {0x6F8}, 0x6F8: ways}, pads, unlined) is None
+    assert runs_into(order, 0x6FC, lines, {0x6FC: {0x6F8}}, pads, unlined) is None
+    # The unwinder enters the code of no line, or a loop jumps back into it, which the
+    # stop's loop check does not see: unknown.
+    assert runs_into(order, 0x6FC, lines, sources, frozenset({0x6F8}), unlined) is None
+    assert (
+        runs_into(order, 0x6FC, lines, {0x6FC: {0x6F8}, 0x6F8: {0x620, 0x704}}, pads, unlined)
+        is None
+    )
+    # A jump back to the stop itself is still the loop's, as without code of no line.
+    assert (
+        runs_into(order, 0x6FC, lines, {0x6FC: {0x6F8, 0x704}, 0x6F8: {0x620}}, pads, unlined)
+        is False
+    )
 
 
 def test_the_stops_disassembly_says_how_control_comes_to_a_preceded_line(monkeypatch, tmp_path):
@@ -1917,6 +1970,20 @@ def test_of_the_rows_at_one_address_the_last_is_the_one_that_runs(tmp_path):
         f"0x{0x400000 + address:016x} {number} 1 1 0 0 is_stmt\n" for address, number, _ in rows
     )
     assert sorted({row[2] for row in _line_rows(text, tmp_path, ("main.c",))}) == [5, 7, 8]
+    # Where code of no line starts: a line-0 row LLDB keeps, or another file's; never an
+    # end of sequence.
+    rows = ((0x1000, 5, 1, ""), (0x1008, 0, 1, ""), (0x1010, 7, 1, ""), (0x1018, 6, 9, ""))
+    rows += ((0x1020, 0, 1, ""), (0x1020, 8, 1, ""), (0x1030, 0, 1, " end_sequence"))
+    header = 'dir_index: 0\nfile_names[ 9]:\nname: "/usr/include/stdio.h"\ndir_index: 0\n'
+    dump = line_dump().split("0x0000000000401000")[0].replace("dir_index: 0\n", header, 1)
+    text = dump + "".join(
+        f"0x{0x400000 + address:016x} {number} 1 {file} 0 0 is_stmt{flag}\n"
+        for address, number, file, flag in rows
+    )
+    unlined = set()
+    found = _line_rows(text, tmp_path, ("main.c",), unlined=unlined)
+    assert [row[2] for row in found] == [5, 7, 8]
+    assert unlined == {0x401008, 0x401018}
 
 
 # The frame stopped in.

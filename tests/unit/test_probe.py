@@ -2792,6 +2792,54 @@ def test_no_stop_after_writes_proven_to_change_nothing_blames_the_line(monkeypat
     )
 
 
+def test_no_stop_where_the_debugger_placed_the_breakpoint_on_another_line_says_so(monkeypatch):
+    # GCC -O2 on x86-64 splits `main.cold` off main; LLDB placed line 14's breakpoint
+    # there only, on code it reads as line 17, and the program ran line 14 without a stop.
+    # "Pick a line the program executes" would blame a line that ran.
+    class Moved(_Stops):
+        def dispatch(self, operation, args):
+            found = super().dispatch(operation, args)
+            if operation == "launch":
+                found["breakpoints"][0]["line"] = 17
+            return found
+
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: Moved([]))
+    result = probe_module.run_probe("/w", Probe("blocks.cpp", 14, ("t",)))
+    assert result["status"] == "no-stop", result
+    assert result["error"]["message"] == (
+        "The program finished without stopping at blocks.cpp:14; check `peeky describe` for "
+        "executable lines. The debugger placed the breakpoint for line 14 on code of line 17, "
+        "so the program may have run line 14 without a stop there"
+    )
+    assert result["error"]["hint"] == (
+        "Line 14 may have no code of its own, or the debugger placed its breakpoint only on "
+        "code that did not run (an optimized build's split-off part): probe another line from "
+        "`peeky describe`, or an unoptimized build."
+    )
+    # LLDB 20 reads the cold part's address as line 14: the breakpoint is not moved, but an
+    # optimized build's line may still have run without a stop.
+
+    class Optimized(_Stops):
+        def dispatch(self, operation, args):
+            found = super().dispatch(operation, args)
+            if operation == "launch":
+                found["target_identity"] = {"language": "cpp", "optimization": "O2"}
+            return found
+
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: Optimized([]))
+    result = probe_module.run_probe("/w", Probe("blocks.cpp", 14, ("t",)))
+    assert result["error"]["message"] == (
+        "The program finished without stopping at blocks.cpp:14; check `peeky describe` for "
+        "executable lines. In an optimized build (-O2) the debugger may place a line's "
+        "breakpoint only on code that does not run, so the program may have run line 14 "
+        "without a stop there"
+    )
+    assert result["error"]["hint"] == (
+        "Probe another line from `peeky describe`, or an unoptimized build: the debugger may "
+        "have placed this line's breakpoint only on code that did not run."
+    )
+
+
 def test_no_stop_after_writes_of_the_same_text_not_proven_no_ops_names_them(monkeypatch):
     # The same text is not always a no-op (a Java String written alike
     # is a new object; a Python `1000` may be another). Such writes are named, never taken

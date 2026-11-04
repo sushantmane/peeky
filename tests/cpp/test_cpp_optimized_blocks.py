@@ -8,6 +8,7 @@ its block's declaration, before it or after it ends, says so."""
 
 import json
 import os
+import platform
 
 import pytest
 
@@ -33,6 +34,8 @@ int main(int argc, char **argv) {
     return 0;
 }
 """
+
+X86_64 = platform.machine().lower() in ("x86_64", "amd64")
 
 
 def target(optimization):
@@ -66,6 +69,19 @@ def rows(tmp_path, adapter, text, marker, selector):
 def test_a_range_for_binding_withholds_the_outer_local_where_lldb_lists_only_it(
     tmp_path, cxx, optimization, marker
 ):
+    if (cxx, optimization, marker) == ("gcc", "O2", "ONE_LINE") and X86_64:
+        # On x86-64, GCC -O2 splits main's exception path off as `main.cold`, and LLDB
+        # places line 14's breakpoint there only (lldb-dap 18 reports it on line 17, 20 on
+        # line 14): the program runs line 14 without a stop. The probe says the line may
+        # have run, never only to pick a line the program executes.
+        (tmp_path / "blocks.cpp").write_text(CPP_SOURCE)
+        line = next(i for i, row in enumerate(CPP_SOURCE.splitlines(), 1) if marker in row)
+        probe = Probe("blocks.cpp", line, ("t",), hits="all")
+        result = run_probe(tmp_path, probe, adapter=target(optimization))
+        assert result["status"] == "no-stop" and not result["rows"], result
+        message = result["error"]["message"]
+        assert f"so the program may have run line {line} without a stop there" in message, message
+        return
     found = rows(tmp_path, target(optimization), CPP_SOURCE, marker, "t")
     shown = [row for row in found if "value" in row]
     # A stop of the header doesn't show the outer `t` (argc, 1) as plain `t`.

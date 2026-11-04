@@ -3,6 +3,7 @@ and proves initialized, read back and seen by the program; everything else refus
 
 import json
 import os
+import platform
 import re
 
 import pytest
@@ -736,6 +737,10 @@ fn main() {
     println!("{} {:?}", total, w);
 }
 """
+# x86-64 folds `w.start`'s load into line 12's `add` (`addq 0x18(%rsp), %rax`): line 13 has no
+# code there. A call on line 13 gives it code of its own, with `n` already in a temporary and
+# `w`'s fields not yet read, as arm64's load does.
+SPLIT_X86_64 = SPLIT.replace("+ w.start; // SPLIT_SECOND", "+ w.start.min(9); // SPLIT_SECOND")
 
 
 @pytest.mark.timeout(400)
@@ -743,9 +748,10 @@ def test_rust_inspect_says_nothing_is_settable_only_when_no_field_is(crate, caps
     # Stepped onto `+ w.start;`, `n` is already
     # in a temporary but `w`'s fields are not, and `set w.start=1` works; inspect said
     # "nothing here is [settable]", taking `n`'s reason for the whole stop.
-    (crate / "src/main.rs").write_text(SPLIT)
+    split = SPLIT_X86_64 if platform.machine().lower() in ("x86_64", "amd64") else SPLIT
+    (crate / "src/main.rs").write_text(split)
     before, second = (
-        next(i for i, line in enumerate(SPLIT.splitlines(), 1) if marker in line)
+        next(i for i, line in enumerate(split.splitlines(), 1) if marker in line)
         for marker in ("SPLIT_BEFORE", "SPLIT_SECOND")
     )
     assert main(["session", "start", str(crate), "--at", f"src/main.rs:{before}"]) == 0

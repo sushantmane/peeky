@@ -245,8 +245,13 @@ def test_the_binarys_landing_pads_are_read_where_the_compiler_put_them(
     [function] = [each for each in declarations if each["name"] == "main"]
     own = sorted(pad for pad in pads if any(low <= pad < high for low, high in function["ranges"]))
     assert own, sorted(pads)
-    rows = function["order"]
+    rows, unlined = function["order"], function["unlined"]
     for pad in own:
-        row = rows[bisect.bisect_right(rows, pad, key=lambda row: row[0]) - 1]
-        assert row[1:] == ("q.cpp", 20), (hex(pad), row)
+        index = bisect.bisect_right(rows, pad, key=lambda row: row[0]) - 1
+        start = bisect.bisect_right(unlined, pad) - 1
+        if start >= 0 and unlined[start] >= rows[index][0]:
+            # On x86-64 the pad's first instruction is code of no line (line 0): the row it
+            # runs into is the one judged.
+            index += 1
+        assert rows[index][1:] == ("q.cpp", 20), (hex(pad), rows[index])
     assert not any(found & pads for found in function["preceded"].values())
