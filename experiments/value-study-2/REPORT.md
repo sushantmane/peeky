@@ -438,7 +438,8 @@ values. Without the request, 2 of 60 did.
   - probes refused before one stopped.
 
   A command that starts a project's own test under the debugger and writes the config would cut most
-  of it. So would a shorter path through the docs for the first probe.
+  of it. So would a shorter path through the docs for the first probe. [SETUP_COST.md](SETUP_COST.md)
+  measures this set-up, call by call.
 - **Close the reach gaps found here:** bat's integration test under Peeky's build (#488), axum's
   debug-information budget (#483), generic Rust code that only another crate compiles, and C++
   test units without checksums (phase 3's compiler wrapper).
