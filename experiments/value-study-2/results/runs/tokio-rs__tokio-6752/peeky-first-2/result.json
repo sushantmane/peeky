@@ -184,7 +184,7 @@
   "withheld": 2,
   "not settable": 3
  },
- "peeky_values_printed": 2,
+ "peeky_values_printed": 0,
  "contaminated": false,
  "final_message": "Fixed: removing the last item dropped the timer without waking the task waiting in `poll_expired`. `remove` now wakes the stored waker when the queue becomes empty; `try_remove` inherits the fix. Added regression tests and documentation. Peeky could not inspect the removal path, reporting `INVALID_BREAKPOINT`: \u201ca generic or inlined function whose code only the crates that use it compile.\u201d\n",
  "assistant_messages": [

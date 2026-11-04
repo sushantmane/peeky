@@ -244,7 +244,7 @@
  "peeky_mentions_in_commands": 13,
  "peeky_withheld_markers": 0,
  "peeky_withheld_by_marker": {},
- "peeky_values_printed": 1,
+ "peeky_values_printed": 0,
  "contaminated": false,
  "final_message": "Fixed the panic: synthetic fallback routes were setting `MatchedPath`, conflicting with nested-service tracking. Fallback routers now skip that assignment; regression tests cover ServeDir and nested paths. Peeky could not launch: `BUDGET_EXHAUSTED`, because its 300 MiB debug-information limit was exceeded. All 283 tests pass with tracing enabled; default features retain a confirmed pre-existing `logging_rejections` failure.",
  "assistant_messages": [

@@ -7,9 +7,11 @@ import gzip
 import json
 import re
 import shlex
+import subprocess
 from collections import Counter, OrderedDict
 from pathlib import Path
 
+HERE = Path(__file__).resolve().parent
 ALLOWED_TOOLS = ("bash", "read_bash", "write_bash", "stop_bash", "list_bash")
 PEEKY_PROGRAMS = ("peeky", "peeky-probe", "peeky-worker", "peeky-agent")
 WITHHELD_MARKERS = ("<not shown", "<not read", "[unproven]", "[stale]", "withheld", "not settable")
@@ -298,8 +300,9 @@ def usage_metrics(run_dir, events, session_events):
 SHELL_ID = re.compile(r"<shellId: (\S+?)>?\s*(?:completed with exit code (-?\d+))?")
 
 
-def collect(run_dir, language="", test_hint="", arm=""):
-    """Metrics from an attempt's directory (events.jsonl, session-events.jsonl, usage.json)."""
+def collect(run_dir, language="", test_hint="", arm="", peeky_sha=None):
+    """Metrics from an attempt's directory (events.jsonl, session-events.jsonl, usage.json).
+    `peeky_sha` is the Peeky commit of the attempt's image, whose docs the agent read."""
     run_dir = Path(run_dir)
     events, bad_lines = read_jsonl(run_dir / "events.jsonl")
     session_events, _ = read_jsonl(run_dir / "session-events.jsonl")
@@ -366,7 +369,7 @@ def collect(run_dir, language="", test_hint="", arm=""):
             subcommands.update(subs)
             for marker in WITHHELD_MARKERS:
                 markers[marker] += entry["output"].count(marker)
-            values_printed += peeky_values(entry["output"])
+            values_printed += peeky_values(entry["output"], command, peeky_sha)
         if "/opt/peeky/docs" in command:
             doc_reads += 1
 
@@ -441,17 +444,79 @@ def collect(run_dir, language="", test_hint="", arm=""):
 
 # What a Peeky command printed of the program's values: a probe table's rows, a session's
 # `name: type = value` lines, and a JSON answer's "value" fields. An approximate count, for
-# comparing arms; the judge checks the values themselves.
+# comparing arms; the judge checks the values themselves. A shell command's output also holds
+# what its other programs printed, so only Peeky's own output counts:
+# - nothing, where its Peeky commands only asked for `--help`;
+# - no line of a Peeky doc the command read (`sed -n … /opt/peeky/docs/…`), as printed or as
+#   grep -n, nl or cat -n number it: the cookbooks' example outputs look like Peeky's;
+# - a session's lines only where it ran `peeky session`, and not a file's line grep -n numbered
+#   (`12:    x: int = 5`); JSON's only where Peeky printed JSON (`--json`, or `peeky job`, which
+#   prints a job's recorded JSON).
 PROBE_ROW = re.compile(r"^\s*\d+\s+(?:observed|after-set|before-set|set)\s+\d+\s", re.M)
 SESSION_VALUE = re.compile(r"^\s*\S+: [^=\n]{1,120} = \S", re.M)
 JSON_VALUE = re.compile(r'"value":\s')
+DOC_FILE = re.compile(r"/opt/peeky/docs/([\w./-]+?\.md)")
+NUMBERED = re.compile(r"^(?:[^\s:]+[:-])?\d+[:-]|^\s*\d+\t")
 
 
-def peeky_values(output):
-    return (
-        len(PROBE_ROW.findall(output))
-        + len(SESSION_VALUE.findall(output))
-        + len(JSON_VALUE.findall(output))
+def peeky_values(output, command, peeky_sha=None):
+    """The program values the Peeky commands of `command` printed in its `output`."""
+    ran = []
+    for program, arguments in invoked_programs(command):
+        if program not in PEEKY_PROGRAMS:
+            continue
+        # Words after `--` are the program's.
+        own = arguments[: arguments.index("--")] if "--" in arguments else arguments
+        if "--help" not in own and "-h" not in own:
+            words = [word for word in own if not word.startswith("-")]
+            ran.append((words[0] if program == "peeky" and words else program, own))
+    if not ran:
+        return 0
+    shown = without_doc_lines(output, DOC_FILE.findall(command), peeky_sha)
+    count = len(PROBE_ROW.findall(shown))
+    if any(sub == "session" for sub, _ in ran):
+        count += sum(1 for line in SESSION_VALUE.findall(shown) if not NUMBERED.match(line))
+    if any(sub == "job" or "--json" in own for sub, own in ran):
+        count += len(JSON_VALUE.findall(shown))
+    return count
+
+
+DOCS = {}
+
+
+def doc_lines(name, peeky_sha):
+    """The lines of `docs/<name>` at `peeky_sha`, the commit an image's Peeky was built from,
+    or None where git has none: PROJECT.md, which each image writes, isn't in git."""
+    if (peeky_sha, name) not in DOCS:
+        found = (
+            subprocess.run(
+                ["git", "show", "{}:docs/{}".format(peeky_sha, name)],
+                cwd=str(HERE),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+            if peeky_sha
+            else None
+        )
+        DOCS[peeky_sha, name] = (
+            {line.strip() for line in found.stdout.decode(errors="replace").splitlines()} - {""}
+            if found and found.returncode == 0
+            else None
+        )
+    return DOCS[peeky_sha, name]
+
+
+def without_doc_lines(output, docs, peeky_sha):
+    """`output` without the lines of the Peeky docs a command read."""
+    lines = set()
+    for name in docs:
+        lines |= doc_lines(name, peeky_sha) or set()
+    if not lines:
+        return output
+    return "\n".join(
+        line
+        for line in output.splitlines()
+        if line.strip() not in lines and NUMBERED.sub("", line, count=1).strip() not in lines
     )
 
 
