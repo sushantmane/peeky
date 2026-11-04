@@ -219,13 +219,13 @@ decisions, through Codex CLI. It is not the main interface.
 - **Also experimental:** Java attach, remote workers and `peeky-agent`.
 - **Not supported:** CUDA ([planned][cuda]), Kubernetes workers, several users
   per worker, and attach for languages other than Java.
-- **CI:** Linux only, with Python 3.11 and 3.13, Java 17, C, C++ (clang and GCC), Rust, a remote
-  SSH lane and a wheel smoke test. macOS is used for development, but isn't in the CI matrix.
-- **Hosted CI** on GitHub Actions is paused, and resumes when the repository is public. Until then,
-  each change is checked by the Docker mirror, `scripts/ci_linux`, with the results in the pull
-  request. It runs the same checks and test suites as CI's jobs, once each. It skips remote SSH
-  e2e, runs the integration tests on one Python, and adds lanes hosted CI doesn't have
-  ([TESTING.md][docker-mirror]).
+- **CI:** GitHub Actions, Linux only: Python 3.11, 3.12 and 3.13, Java 17, C, C++ (clang and
+  GCC) and Rust with LLVM 18 and 20, GDB's DAP, a remote SSH lane and a wheel smoke test. Its
+  lane jobs run in the Docker image a laptop uses, `scripts/ci_linux` ([TESTING.md][docker-mirror]).
+  macOS is used for development, but isn't in the CI matrix.
+- **CI minutes:** the repository is private, so CI uses the account's Actions minutes. When they
+  run out, jobs don't start until a budget covers more; `scripts/ci_linux/docker_lanes.sh` runs
+  the same lanes locally.
 - **Licence:** Apache License 2.0 (see Licence, below).
 
 ## Documentation

@@ -348,10 +348,10 @@ def test_peeky_reads_a_program_with_its_own_interpreters_version(tmp_path, capsy
     assert noted == [version < (3, 12)] * len(held), (version, held)
     assert result["python"]["interpreter"] == str(python), result
     assert result["python"]["version"].startswith(f"{version[0]}.{version[1]}.")
-    # Peeky's own Python (3.12 or later reads no note there) for the same program.
+    # Peeky's own Python for the same program: its own version's reading.
     code, out = run(capsys, *argv, "--no-save", "--json", "--python", "peeky")
     own = json.loads(out.out)
-    assert not any(row.get("note") for row in own["rows"]), own["rows"]
+    assert_own_reading(own["rows"])
     # `describe` parses with the program's interpreter: 3.11 has no `def f[T]`.
     code, out = run(capsys, "describe", root / "generic.py", "--json")
     described = json.loads(out.out)
@@ -366,7 +366,7 @@ def test_peeky_reads_a_program_with_its_own_interpreters_version(tmp_path, capsy
     code, out = run(capsys, *argv, "--no-save", "--json")
     again = json.loads(out.out)
     assert code == 0 and again["python"]["version"] == own_version(), again["python"]
-    assert not any(row.get("note") for row in again["rows"]), again["rows"]
+    assert_own_reading(again["rows"])
     # And back to the other version: its reading again.
     shutil.rmtree(root / ".venv")
     python = make_venv(root / ".venv", base)
@@ -378,6 +378,16 @@ def test_peeky_reads_a_program_with_its_own_interpreters_version(tmp_path, capsy
 
 def own_version():
     return ".".join(map(str, sys.version_info[:3]))
+
+
+def assert_own_reading(rows):
+    # ROWS read with Peeky's own Python: no note from 3.12 on; on 3.11, each value at line 4
+    # is the earlier pass's, and says so.
+    if sys.version_info >= (3, 12):
+        assert not any(row.get("note") for row in rows), rows
+        return
+    held = [row for row in rows if row["function"] == "pick" and "value" in row]
+    assert held and all(row.get("note") for row in held), rows
 
 
 OPTIMIZED = """\

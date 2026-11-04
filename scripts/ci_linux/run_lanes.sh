@@ -1,16 +1,16 @@
 #!/bin/bash
-# Runs inside the image, from the root of an extracted tree (see CONTRIBUTING.md):
-# each lane of .github/workflows/ci.yml except the remote SSH e2e (run that on the
-# host with PEEKY_E2E_DOCKER=1), plus Rust and C++ with LLVM 20's lldb-dap, whose
-# readMemory qualifies Rust memory views and libstdc++ strings with a NUL byte,
-# C and C++ built by GCC with it, and GDB's DAP, which CUDA qualification
-# drives (scripts/cuda/qualify.py). One PASS/FAIL line per lane; non-zero on failure.
+# Runs inside the CI image, from the root of an extracted tree (see CONTRIBUTING.md). CI's
+# Linux lane jobs (.github/workflows/ci.yml) each run it with PEEKY_LANES naming their lanes;
+# unset, it runs every lane. Remote SSH e2e runs on CI's runner instead. Python runs on 3.11,
+# 3.12 and 3.13; C, C++ and Rust with LLVM 18 and with LLVM 20's lldb-dap (readMemory qualifies
+# Rust memory views and libstdc++ strings with a NUL byte); and GDB's DAP, which CUDA
+# qualification drives (scripts/cuda/qualify.py). One PASS/FAIL line per lane; non-zero on failure.
 set -u
 python3 -m venv /v >/dev/null && /v/bin/pip install -q -e '.[dev]' || exit 90
 export PATH=/v/bin:$PATH
 status=0
 lane() {
-  name=$1; shift; start=$SECONDS
+  name=$1; shift; start=$SECONDS; selected "$name" || return 0; ran="${ran:-} $name"
   if env "$@" > "/tmp/$name.log" 2>&1; then
     echo "PASS $name ($((SECONDS - start)) s): $(tail -1 "/tmp/$name.log" | cut -c1-300)"
   else
@@ -24,6 +24,7 @@ rust=(PEEKY_RUST_LINKER=/usr/bin/clang-18 PEEKY_RUST_DAP=/usr/bin/lldb-dap-18
       "PEEKY_RUST_CARGO=$(rustup which --toolchain 1.96.0 cargo)"
       "PEEKY_RUST_RUSTC=$(rustup which --toolchain 1.96.0 rustc)")
 # (Helper scripts source the 25 lines above for `native` and `rust`: keep them there.)
+selected() { [ -z "${PEEKY_LANES:-}" ] || case " $PEEKY_LANES " in *" $1 "*) true ;; *) false ;; esac; }
 # What a failed lane's log says, bounded, so that a failure seen once can be diagnosed:
 # pytest's summary lines, then each failing test's section (its header, its frames'
 # `file:line` lines, its `E` lines and the start of what it printed), at most 8 tests and
@@ -46,9 +47,29 @@ failures() {
   if [ -s /tmp/failures.txt ]; then sed 's/^/  | /' /tmp/failures.txt; else tail -40 "$log" | cut -c1-300 | sed 's/^/  | /'; fi
   if [ -n "${PEEKY_LANE_LOGS:-}" ]; then cp "$log" "$PEEKY_LANE_LOGS/"; fi
 }
+# A lane whose setup failed (its environment, or Java's adapter): its time, what its setup log
+# says and, with PEEKY_LANE_LOGS, the whole log, as a failed lane gets.
+setup_failed() {
+  cp "$2" "/tmp/$1.log"
+  echo "FAIL $1 setup ($((SECONDS - $3)) s): $(tail -1 "/tmp/$1.log" | cut -c1-300)"; failures "$1"
+  ran="${ran:-} $1"; status=1
+}
 lane quality bash -c 'ruff check . && ruff format --check .'
 lane unit pytest -q -p no:cacheprovider tests/unit
 lane integration pytest -q -p no:cacheprovider tests/integration
+# The unit and integration tests on Python 3.11 and 3.13 (the image's uv-installed CPython), each
+# in its own environment, as the lanes above run them on Ubuntu's 3.12.
+for version in 3.11 3.13; do
+  name=py${version/./}
+  selected "$name" || continue
+  start=$SECONDS
+  if "python$version" -m venv "/v$version" > "/tmp/$name-setup.log" 2>&1 &&
+    "/v$version/bin/pip" install -q -e '.[dev]' >> "/tmp/$name-setup.log" 2>&1; then
+    lane "$name" PATH="/v$version/bin:$PATH" pytest -q -p no:cacheprovider tests/unit tests/integration
+  else
+    setup_failed "$name" "/tmp/$name-setup.log" "$start"
+  fi
+done
 lane c "${native[@]}" PEEKY_NATIVE_CC=/usr/bin/clang-18 pytest -q -p no:cacheprovider tests/native
 lane cpp "${native[@]}" PEEKY_NATIVE_CXX=/usr/bin/clang++-18 pytest -q -p no:cacheprovider tests/cpp
 # C built by GCC with LLVM 20's lldb-dap: the files whose cases depend on how GCC lays out code
@@ -74,10 +95,13 @@ lane rust-llvm20 "${rust[@]}" PEEKY_RUST_DAP=/usr/bin/lldb-dap-20 \
   PEEKY_RUST_DWARFDUMP=/usr/bin/llvm-dwarfdump-20 PEEKY_EXPECT_READ_MEMORY=1 \
   pytest -q -p no:cacheprovider tests/rust
 lane gdb-dap PEEKY_GDB=/usr/bin/gdb pytest -q -p no:cacheprovider tests/gdb
-if python scripts/setup_java_adapter.py --output /tmp/peeky-java > /tmp/java-setup.log 2>&1; then
+start=$SECONDS
+if ! selected java; then
+  :
+elif python scripts/setup_java_adapter.py --output /tmp/peeky-java > /tmp/java-setup.log 2>&1; then
   lane java PEEKY_JAVA_ADAPTER=/tmp/peeky-java pytest -q -p no:cacheprovider tests/java
 else
-  echo "FAIL java setup: $(tail -3 /tmp/java-setup.log)"; status=1
+  setup_failed java /tmp/java-setup.log "$start"
 fi
 lane wheel bash -c 'pip install -q build==1.3.0 && python -m build >/dev/null 2>&1 &&
   python3 -m venv /wheel && /wheel/bin/pip install -q dist/*.whl &&
@@ -85,4 +109,7 @@ lane wheel bash -c 'pip install -q build==1.3.0 && python -m build >/dev/null 2>
   for tool in peeky-worker peeky-agent peeky-probe peeky; do /wheel/bin/$tool --help >/dev/null || exit 1; done &&
   /wheel/bin/peeky setup-java --help >/dev/null &&
   /wheel/bin/python scripts/smoke_wheel.py && echo "wheel ok"'
+for name in ${PEEKY_LANES:-}; do
+  case " ${ran:-} " in *" $name "*) ;; *) echo "FAIL $name: no such lane"; status=1 ;; esac
+done
 exit $status
