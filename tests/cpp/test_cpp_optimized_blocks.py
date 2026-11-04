@@ -71,20 +71,16 @@ def test_a_range_for_binding_withholds_the_outer_local_where_lldb_lists_only_it(
 ):
     if (cxx, optimization, marker) == ("gcc", "O2", "ONE_LINE") and X86_64:
         # On x86-64, GCC -O2 splits main's exception path off as `main.cold`, and LLDB
-        # places line 14's breakpoint there only (on code it reads as line 17): the
-        # program runs line 14 without a stop. The probe says where the breakpoint went,
-        # never that line 14 did not run.
+        # places line 14's breakpoint there only (lldb-dap 18 reports it on line 17, 20 on
+        # line 14): the program runs line 14 without a stop. The probe says the line may
+        # have run, never only to pick a line the program executes.
         (tmp_path / "blocks.cpp").write_text(CPP_SOURCE)
         line = next(i for i, row in enumerate(CPP_SOURCE.splitlines(), 1) if marker in row)
         probe = Probe("blocks.cpp", line, ("t",), hits="all")
         result = run_probe(tmp_path, probe, adapter=target(optimization))
         assert result["status"] == "no-stop" and not result["rows"], result
-        placed = result["breakpoint"]["line"]
-        assert (
-            placed != line
-            and f"The debugger placed the breakpoint for line {line} on "
-            in (result["error"]["message"])
-        ), result["error"]
+        message = result["error"]["message"]
+        assert f"so the program may have run line {line} without a stop there" in message, message
         return
     found = rows(tmp_path, target(optimization), CPP_SOURCE, marker, "t")
     shown = [row for row in found if "value" in row]

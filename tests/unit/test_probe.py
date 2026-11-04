@@ -2816,6 +2816,28 @@ def test_no_stop_where_the_debugger_placed_the_breakpoint_on_another_line_says_s
         "code that did not run (an optimized build's split-off part): probe another line from "
         "`peeky describe`, or an unoptimized build."
     )
+    # LLDB 20 reads the cold part's address as line 14: the breakpoint is not moved, but an
+    # optimized build's line may still have run without a stop.
+
+    class Optimized(_Stops):
+        def dispatch(self, operation, args):
+            found = super().dispatch(operation, args)
+            if operation == "launch":
+                found["target_identity"] = {"language": "cpp", "optimization": "O2"}
+            return found
+
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: Optimized([]))
+    result = probe_module.run_probe("/w", Probe("blocks.cpp", 14, ("t",)))
+    assert result["error"]["message"] == (
+        "The program finished without stopping at blocks.cpp:14; check `peeky describe` for "
+        "executable lines. In an optimized build (-O2) the debugger may place a line's "
+        "breakpoint only on code that does not run, so the program may have run line 14 "
+        "without a stop there"
+    )
+    assert result["error"]["hint"] == (
+        "Probe another line from `peeky describe`, or an unoptimized build: the debugger may "
+        "have placed this line's breakpoint only on code that did not run."
+    )
 
 
 def test_no_stop_after_writes_of_the_same_text_not_proven_no_ops_names_them(monkeypatch):
