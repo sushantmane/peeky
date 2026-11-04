@@ -287,7 +287,7 @@
  "peeky_withheld_by_marker": {
   "[unproven]": 22
  },
- "peeky_values_printed": 55,
+ "peeky_values_printed": 38,
  "contaminated": false,
  "final_message": "The compiler undercounted `finally`\u2019s unwind stack, allowing it to overwrite `self`. Peeky\u2019s probe at `py/runtime.c:1055` showed `base = 0x3`, integer `1`, confirming the corrupted receiver. I reserved the missing stack slot and added regression coverage. The original example now prints `0`, and related tests pass.",
  "assistant_messages": [

@@ -262,7 +262,7 @@
  "peeky_withheld_by_marker": {
   "not settable": 8
  },
- "peeky_values_printed": 10,
+ "peeky_values_printed": 8,
  "contaminated": false,
  "final_message": "Fixed integer overflow in the latitude-grid upper bound. Peeky stopped at the incorrect rejection and showed `lat2 = latBase = 2147483646` and `maxLatDelta = 2`, making their sum overflow negative. Both geometry and distance predicates now compare offsets instead of adding bounds. Added polar and doc-values regression tests without modifying existing tests.",
  "assistant_messages": [

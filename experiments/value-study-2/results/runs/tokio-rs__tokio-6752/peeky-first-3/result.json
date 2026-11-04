@@ -193,7 +193,7 @@
   "[stale]": 3,
   "withheld": 2
  },
- "peeky_values_printed": 14,
+ "peeky_values_printed": 0,
  "contaminated": false,
  "final_message": "Fixed the missed wakeup: removing the last item dropped the timer without notifying the saved poller. `remove` now wakes that poller when the queue becomes empty; `try_remove` inherits the fix. Added regression tests and updated documentation. Peeky could not inspect `remove`, reporting `[INVALID_BREAKPOINT]`: \u201ca generic or inlined function whose code only the crates that use it compile.\u201d",
  "assistant_messages": [

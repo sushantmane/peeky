@@ -228,7 +228,7 @@
  "peeky_mentions_in_commands": 9,
  "peeky_withheld_markers": 0,
  "peeky_withheld_by_marker": {},
- "peeky_values_printed": 11,
+ "peeky_values_printed": 6,
  "contaminated": false,
  "final_message": "Fixed the collector fetching every field from cascaded objects, which unnecessarily decoded corrupt text. Related queries now load only primary and cascade-reference keys, preserving full loading for signals and `select_related()`. Peeky\u2019s probe at `deletion.py:223` showed no deferred fields before the fix; afterward it showed `({'id'}, False)`, and the corrupt-text deletion succeeded.",
  "assistant_messages": [
