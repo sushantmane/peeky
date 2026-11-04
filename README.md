@@ -251,8 +251,9 @@ decisions, through Codex CLI. It is not the main interface.
 
 ## Contributing
 
-[CONTRIBUTING.md][contributing] has the local checks and the change process. Everyone taking
-part follows the [code of conduct][code-of-conduct]. Report bugs and ask for features with the
+[CONTRIBUTING.md][contributing] has the local checks and the change process, and how to sign off
+your commits under the Developer Certificate of Origin (DCO). Everyone taking part follows the
+[code of conduct][code-of-conduct]. Report bugs and ask for features with the
 [issue templates](https://github.com/sushantmane/peeky/issues/new/choose). Report vulnerabilities
 privately instead, as [SECURITY.md][security] describes.
 
