@@ -1737,8 +1737,8 @@ def _probe_result(args, root, result, edit, original, program, language):
         and getattr(args, "test_command", None) is None
         and (result.get("error") or {}).get("code") == "NO_STOP"
     ):
-        # 30 of round 2's probes in 16 attempts ended so: the JVM they attached to ran
-        # something else, or ran the line before the attach.
+        # 30 of round 2's probes in 16 attempts ended so: the line didn't run while Peeky was
+        # attached (another JVM, another classpath, or the line ran before the attach).
         result["error"]["hint"] += (
             " An attached JVM runs what started it, which may not run the line, or ran it "
             "before the attach: let Peeky start the test with `--test -- <the test command>` "

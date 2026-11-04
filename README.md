@@ -87,14 +87,17 @@ when a print costs more ([when][when]):
 - you want to check a fix on a fresh copy, with your files unchanged.
 
 On your own project, give Peeky the command that runs the failing test, from the project's
-root ([first question][first]):
+root ([first question][first]). Peeky reads it and runs the program or test it names under the
+debugger; a warning says where that run differs from the command's, and what it can't run so is
+refused:
 
 ```sh
-peeky probe . --at src/pkg/mod.py:LINE --capture a,b --test -- pytest tests/test_x.py
+peeky probe . --at src/pkg/mod.py:LINE --capture a,b --test -- python -m pytest tests/test_x.py
 ```
 
-- **Python:** `pytest …`, `python -m pytest …` or `python script.py …`. A project installed
-  without `-e` runs its `site-packages` copy, not its source.
+- **Python:** `python -m pytest …` or `python script.py …`, not the `pytest` script.
+  `python -m pytest` puts the root first on `sys.path`: a package at the root is imported from
+  the source, and a `src/` layout's as installed (`pip install -e .`).
 - **Java:** `mvn test …`, `./gradlew test …`, `java …` or `javac …`: Peeky starts the test,
   attaches to its JVM, and lets it end. Or attach to a JVM you started, or launch a class with no
   Maven or Gradle dependencies ([first command][first-command]).
@@ -103,7 +106,8 @@ peeky probe . --at src/pkg/mod.py:LINE --capture a,b --test -- pytest tests/test
   ([C and C++](https://github.com/sushantmane/peeky/blob/main/docs/lang/c-cpp.md#a-binary-your-project-built)).
   Or a directory of sources, which Peeky builds itself.
 - **Rust:** `cargo test …` or `cargo run …`, in a workspace whose dependencies are vendored
-  (`cargo vendor --locked vendor`), or a `cargo new` crate.
+  (`cargo vendor --locked vendor`), or a `cargo new` crate. Peeky builds it and runs the test's
+  executable itself, in its own environment.
 
 `examples/pagination_bug.py` has a bug: page 1 starts at the second page. Stop at line 8, read two
 values, and set `start` to 0:

@@ -33,8 +33,9 @@
 
 - **The first question on one page (ADR 0009).** `docs/FIRST.md`, 1.2 KB, gives the one
   `--test` command per language and three rules; the guide, `peeky --help`, `peeky probe --help`,
-  the README and the skill open with it. Every round 2 attempt read the 20 KB guide and a
-  language page first. The refusals they met most now take the input or name the next command:
+  the README and the skill open with it. 86 of 87 round 2 attempts read the 20 KB guide and
+  their language's page before their first probe. The refusals they met most now take the input
+  or name the next command:
   - `--set-at '966@1 url=x'`, one word, is taken as its two (9 refusals in round 2).
   - A Java config's absolute path inside the target directory is taken (6); one outside is
     refused naming the directory.

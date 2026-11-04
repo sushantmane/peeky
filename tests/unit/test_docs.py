@@ -46,28 +46,34 @@ def test_the_guide_opens_with_when_to_use_peeky_and_the_first_command():
     for text in (
         # Round 2's agents spent most of their set-up before the first stop (ADR 0009): the
         # first command takes the project's own test command.
-        "--test -- pytest -q tests/test_x.py::test_y",
+        "--test -- python -m pytest -q tests/test_x.py::test_y",
+        "The `pytest` script is refused",
+        "--test -- <the same test command>",
         "--run-module pytest -- …",
-        "installed without `-e` runs its `site-packages` copy",
+        "a `src/` layout's package is imported as installed: `pip install -e .`",
         "-Dmaven.surefire.debug",
         "--debug-jvm",
         '"main_class": "pkg.Main"',
         "built with clang `-O0 -g -gdwarf-5 -grecord-command-line` (`--binary ./prog`)",
-        "`cargo test …` or `cargo run …`: Peeky makes the workspace config and builds it",
+        "`cargo test …` or `cargo run …`: Peeky makes the workspace config, builds it,",
         "cargo vendor --locked vendor",
     ):
         assert text in first, text
 
 
 def test_the_first_question_page_fits_a_glance_and_the_guide_opens_with_it():
-    # Every round 2 attempt read the 20 KB guide and a language page before its first probe.
+    # 86 of 87 round 2 attempts read the 20 KB guide and their language's page before their
+    # first probe.
     page = (DOCS / "FIRST.md").read_text()
     assert len(page.encode()) <= 2 * 1024
     guide = (DOCS / "AGENT_GUIDE.md").read_text()
     assert "[FIRST.md](FIRST.md)" in guide[:400]
     for text in ("--test -- <the test command>", "mvn test", "./gradlew test", "cargo test"):
         assert text in page, text
-    assert "pytest -q tests/test_x.py::test_y" in page and "./build/prog ARGS" in page
+    assert "python -m pytest -q tests/test_x.py::test_y" in page and "./build/prog ARGS" in page
+    # It shows no command --test refuses: the `pytest` script, nor a test ctest runs elsewhere.
+    assert "`pytest" not in page and "ctest" not in page
+    assert "describe . --at FILE --test -- <the" in page
 
 
 def _slugs(headings):

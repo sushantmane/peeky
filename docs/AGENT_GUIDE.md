@@ -27,19 +27,23 @@ Each question costs a run, and Peeky can't run every project (below).
 
 Run it from the project's root. Stop at `FILE:LINE`, the line after the one that computes the
 value: a breakpoint stops before its line runs. `--capture a,b.c` names what to read. After
-`--test --` goes the command that runs the failing test, as you would type it:
+`--test --` goes the command that runs the failing test, as you would type it. Peeky reads it
+and runs the program or test it names under the debugger; a `warning:` says where that run
+differs from the command's, and what it can't run so is refused:
 
 ```sh
-peeky probe . --at src/pkg/mod.py:LINE --capture a,b.c --test -- pytest -q tests/test_x.py::test_y
+peeky probe . --at src/pkg/mod.py:LINE --capture a,b.c --test -- python -m pytest -q tests/test_x.py::test_y
 ```
 
-`peeky describe`, with the probe's target and `--at FILE`, lists the lines and names. Your
-language's page has the rest: [Python](lang/python.md), [Java](lang/java.md),
-[C and C++](lang/c-cpp.md), [Rust](lang/rust.md).
+`peeky describe . --at FILE --test -- <the same test command>` lists the lines and names; for
+Java, a probe at a line with no code names the lines nearby. Your language's page has the rest:
+[Python](lang/python.md), [Java](lang/java.md), [C and C++](lang/c-cpp.md), [Rust](lang/rust.md).
 
-- **Python:** `pytest …` runs as `--run-module pytest -- …`, and `python script.py …` as
-  `--run script.py -- …`, on the command's interpreter. A project installed without `-e` runs
-  its `site-packages` copy, not its source: `pip install -e .`.
+- **Python:** `python -m pytest …` runs as `--run-module pytest -- …`, and `python script.py …`
+  as `--run script.py -- …`, on the command's interpreter. The `pytest` script is refused: the
+  message gives its `python -m pytest`. `python -m pytest` puts the root first on `sys.path`, so
+  a package at the root (flat layout) is imported from the source even where a copy is
+  installed; a `src/` layout's package is imported as installed: `pip install -e .`.
 - **Java:** `mvn`, `./gradlew`, `java` or `javac`, after `peeky setup-java` once, with JDK 17 on
   `PATH` (7.3). Peeky starts the test with its debug agent, attaches, and lets it end. For a JVM
   you started yourself (`-Dmaven.surefire.debug`, `--debug-jvm`), attach with `--config
@@ -47,11 +51,14 @@ language's page has the rest: [Python](lang/python.md), [Java](lang/java.md),
   ["target/classes"]}` (7.4). A class with `main`: `{"sources": ["pkg/Main.java"],
   "main_class": "pkg.Main"}`.
 - **C or C++:** the test's binary and its arguments, built with clang `-O0 -g -gdwarf-5
-  -grecord-command-line` (`--binary ./prog`). Without a project build, `peeky probe DIR --at
-  file.c:LINE` builds one directory's `.c` or `.cpp` files itself.
-- **Rust:** `cargo test …` or `cargo run …`: Peeky makes the workspace config and builds it.
-  Vendor dependencies first: `cargo vendor --locked vendor` (7.2). A `cargo new` crate without
-  dependencies: `peeky probe CRATE --at src/main.rs:LINE`.
+  -grecord-command-line` (`--binary ./prog`), run in Peeky's environment. `ctest -R NAME` works
+  for a test ctest would run in the root with no environment of its own. Without a project
+  build, `peeky probe DIR --at file.c:LINE` builds one directory's `.c` or `.cpp` files itself.
+- **Rust:** `cargo test …` or `cargo run …`: Peeky makes the workspace config, builds it, and
+  runs the test's executable itself, in its own environment. A runner, or a variable that
+  changes Cargo's build (`RUSTFLAGS` but lints), is refused. Vendor dependencies first: `cargo
+  vendor --locked vendor` (7.2). A `cargo new` crate without dependencies: `peeky probe CRATE
+  --at src/main.rs:LINE`.
 
 ## The loop
 
