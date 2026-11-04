@@ -44,9 +44,10 @@
   clang puts line-0 code (a call's argument) just before the line's first row. Peeky took that
   code for the line before it (a landing pad's), which "runs into" the line past its declaration.
   Code of no line is now followed back to how control reaches it, and the local is withheld. A
-  probe that never stops, where the debugger placed the line's breakpoint on another line's code
-  (GCC -O2's `main.cold`), now says so rather than "pick a line the program executes". Tests
-  that expected arm64's code layout now say what x86-64 does.
+  probe that never stops, where the debugger placed the line's breakpoint on another line's
+  code, or in an optimized build (LLDB places GCC -O2's line only in `main.cold`), now says the
+  line may have run without a stop, rather than "pick a line the program executes". Tests that
+  expected arm64's code layout now say what x86-64 does.
 
 - **The first question on one page (ADR 0009).** `docs/FIRST.md`, 1.2 KB, gives the one
   `--test` command per language and three rules; the guide, `peeky --help`, `peeky probe --help`,
