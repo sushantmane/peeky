@@ -220,7 +220,7 @@
  "peeky_mentions_in_commands": 19,
  "peeky_withheld_markers": 0,
  "peeky_withheld_by_marker": {},
- "peeky_values_printed": 15,
+ "peeky_values_printed": 36,
  "contaminated": false,
  "final_message": "`ACL LOAD` dereferenced the replica\u2019s upstream client\u2019s intentionally null ACL user. Peeky stopped at `src/acl.c:2382`; `peeky session get original --name acl-load-replica` showed `0x0000000000000000`. The reload loop now skips ACL-independent clients, preserving replication. Added regressions cover ACL files with and without a default user; both ACL suites pass.",
  "assistant_messages": [

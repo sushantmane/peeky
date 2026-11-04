@@ -220,7 +220,7 @@
  "peeky_mentions_in_commands": 9,
  "peeky_withheld_markers": 0,
  "peeky_withheld_by_marker": {},
- "peeky_values_printed": 9,
+ "peeky_values_printed": 8,
  "contaminated": false,
  "final_message": "Fixed proxy authentication by preserving credentials in `prepend_scheme_if_needed`. URL reconstruction used urllib3\u2019s `netloc`, which excludes authentication, so proxy credentials were dropped. Peeky stopped at the reconstruction line and showed `auth='user:pass'` but `netloc='proxy.example:8080'`; the fix restores `auth@netloc` so proxy authentication headers receive the credentials.",
  "assistant_messages": [

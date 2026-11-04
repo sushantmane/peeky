@@ -335,7 +335,7 @@
  "peeky_mentions_in_commands": 15,
  "peeky_withheld_markers": 0,
  "peeky_withheld_by_marker": {},
- "peeky_values_printed": 95,
+ "peeky_values_printed": 63,
  "contaminated": false,
  "final_message": "Fixed the SVG 404 links. Peeky showed nested pages generating incorrectly based URLs such as `../classes.html#sphinx.parsers.RSTParser`. The fix resolves references relative to the page\u2019s output location, then rebases them against the actual SVG directory, preserving PNG behavior, external URLs, and directory-HTML links.",
  "assistant_messages": [

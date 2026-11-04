@@ -233,7 +233,7 @@
  "peeky_withheld_by_marker": {
   "withheld": 1
  },
- "peeky_values_printed": 8,
+ "peeky_values_printed": 0,
  "contaminated": false,
  "final_message": "Fixed the cursor skipping the channel\u2019s closure marker. Resubscribed receivers now start at that marker and retain it, so `recv` and `try_recv` consistently return `Closed`. Added regression coverage. Peeky could not inspect `new_receiver`: \u201cLine 674 has no code to stop at in `tokio`'s build,\u201d because the generic function is compiled by the integration-test crate.",
  "assistant_messages": [

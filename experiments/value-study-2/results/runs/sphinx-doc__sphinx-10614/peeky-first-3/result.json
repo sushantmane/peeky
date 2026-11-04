@@ -283,7 +283,7 @@
  "peeky_mentions_in_commands": 14,
  "peeky_withheld_markers": 0,
  "peeky_withheld_by_marker": {},
- "peeky_values_printed": 30,
+ "peeky_values_printed": 29,
  "contaminated": false,
  "final_message": "Fixed SVG inheritance-diagram links by resolving URLs through the builder\u2019s target URI and rebasing against the actual SVG directory. The root cause was mixing page-relative and image-relative paths: Peeky\u2019s pre-fix `probe --at sphinx/ext/inheritance_diagram.py:425` showed `../target.html` instead of `../nested/target.html`. Added regression coverage without changing existing tests; all 43 targeted tests pass.",
  "assistant_messages": [
