@@ -229,7 +229,7 @@
  "peeky_mentions_in_commands": 20,
  "peeky_withheld_markers": 0,
  "peeky_withheld_by_marker": {},
- "peeky_values_printed": 6,
+ "peeky_values_printed": 8,
  "contaminated": false,
  "final_message": "The root cause was mutual Clap overrides: `--plain` erased `--paging=never`, while reversed arguments erased plain styling. I removed those overrides and preserved `-pp` paging precedence. `peeky probe` confirmed `paging_mode=QuitIfOneScreen` before the fix and `Never` afterward. Added regression tests; paging/plain integration tests and library unit tests pass.",
  "assistant_messages": [

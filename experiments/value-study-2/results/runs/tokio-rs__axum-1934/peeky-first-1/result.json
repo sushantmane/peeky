@@ -280,7 +280,7 @@
   "[stale]": 1,
   "not settable": 1
  },
- "peeky_values_printed": 1,
+ "peeky_values_printed": 0,
  "contaminated": false,
  "final_message": "Fixed the panic: fallback routing incorrectly set `MatchedPath` to its internal catch-all pattern, contaminating nested routing. Fallbacks now clear `MatchedPath` while preserving nested-path tracking. Added regressions; 210 affected tests pass with tracing enabled. Peeky could not inspect values: \u201c[BUDGET_EXHAUSTED] Peeky keeps at most 300 MiB of a build's debug information in memory.\u201d",
  "assistant_messages": [

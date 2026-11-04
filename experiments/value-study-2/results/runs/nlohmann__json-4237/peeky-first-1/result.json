@@ -220,7 +220,7 @@
  "peeky_withheld_by_marker": {
   "withheld": 1
  },
- "peeky_values_printed": 1,
+ "peeky_values_printed": 0,
  "contaminated": false,
  "final_message": "The enum serializer always selected signed integer storage, turning large unsigned values negative. It now selects storage based on the underlying type\u2019s signedness in both headers, with regression coverage and updated documentation. `peeky probe` could not inspect either reproducer binary, reporting \u201cits line table records no MD5s, and names <stdin>\u201d; reproduction and verification therefore used direct runs.",
  "assistant_messages": [
