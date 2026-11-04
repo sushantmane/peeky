@@ -5,6 +5,7 @@ so it stops at every pass and gets no such note."""
 
 import json
 import os
+import platform
 
 import pytest
 
@@ -53,6 +54,7 @@ MAIN = """fn main() {
     println!("TOTAL:{} {} {}", total, k, n);
 }
 """
+X86_64 = platform.machine().lower() in ("x86_64", "amd64")
 
 
 @pytest.fixture
@@ -82,18 +84,31 @@ def probe(root, capsys, marker):
 @pytest.mark.timeout(600)
 def test_rust_loop_headers_say_when_they_stop_only_before_their_loop(crate, capsys):
     line, result, notes = probe(crate, capsys, "FOR")
-    assert result["hits"] == 2
-    assert notes == [
-        f"Line {line} is a loop header: it stops twice each time its loop starts, before the "
-        "first pass, never at the passes; put --at (or --set-at) on the first line of the "
-        "loop's body for one stop per pass (each hit's stop, 1 to 2, says which)."
-    ]
-    # The loop note says more than the per-pass warning, which it replaces.
-    assert not [w for w in result["warnings"] if "times per pass" in w], result["warnings"]
-    assert [row["stop"] for row in result["rows"]] == [1, 2]
+    if X86_64:
+        # On x86-64 the loop jumps back to line 0's code (`leaq` of the iterator for
+        # `next`) just before the line's second location, `next`'s call: that one stops
+        # at each of the 4 checks. No loop note; the per-pass warning names both stops.
+        assert result["hits"] == 5 and not notes, result["warnings"]
+        assert [w for w in result["warnings"] if "stops up to 2 times per pass" in w]
+        assert [row["stop"] for row in result["rows"]] == [1, 2, 2, 2, 2]
+    else:
+        assert result["hits"] == 2
+        assert notes == [
+            f"Line {line} is a loop header: it stops twice each time its loop starts, before "
+            "the first pass, never at the passes; put --at (or --set-at) on the first line of "
+            "the loop's body for one stop per pass (each hit's stop, 1 to 2, says which)."
+        ]
+        # The loop note says more than the per-pass warning, which it replaces.
+        assert not [w for w in result["warnings"] if "times per pass" in w], result["warnings"]
+        assert [row["stop"] for row in result["rows"]] == [1, 2]
     line, result, notes = probe(crate, capsys, "WHILE")
-    assert result["hits"] == 1 and len(notes) == 1, result["warnings"]
-    assert notes[0].startswith(f"Line {line} is a loop header: it stops once"), notes
+    if X86_64:
+        # x86-64's `while` has no jump to its condition on its line: its first code is the
+        # condition the loop returns to (line 7's `k = 0` falls into it), checked 4 times.
+        assert result["hits"] == 4 and not notes, result["warnings"]
+    else:
+        assert result["hits"] == 1 and len(notes) == 1, result["warnings"]
+        assert notes[0].startswith(f"Line {line} is a loop header: it stops once"), notes
     # `loop {` holds no code of its loop's header, only a jump into it (as a `goto`
     # would): no note.
     line, result, notes = probe(crate, capsys, "LOOP")

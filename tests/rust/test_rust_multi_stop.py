@@ -4,6 +4,7 @@ gives 12 hits for 4 values, and `--hits`/`--set-hit` count stops, not passes."""
 
 import json
 import os
+import platform
 import signal
 import threading
 
@@ -94,6 +95,21 @@ def per_pass(result):
     return [w for w in result["warnings"] if "times per pass" in w]
 
 
+def for_header(result):
+    """`for v in …`'s two stops (into_iter, then the iterator's `next`) and what the probe
+    says of them. On arm64 both run before the loop: the loop note. On x86-64 the loop jumps
+    back to line 0's code (the `leaq` of `next`'s argument) just before the second, which
+    stops at each of the 5 checks for 4 values: the per-pass warning, and each stop."""
+    loop = [w for w in result["warnings"] if "is a loop header: it stops twice" in w]
+    stops = [(row["stop"], row["stops"]) for row in result["rows"]]
+    if platform.machine().lower() in ("x86_64", "amd64"):
+        assert result["hits"] == 6 and per_pass(result) and not loop, result["warnings"]
+        assert stops == [(1, 2)] + [(2, 2)] * 5, stops
+    else:
+        assert result["hits"] == 2 and not per_pass(result) and loop, result["warnings"]
+        assert stops == [(1, 2), (2, 2)], stops
+
+
 @pytest.mark.timeout(600)
 def test_formats_line_says_it_stops_three_times_per_pass(movavg, capsys):
     where = at("FORMAT")
@@ -119,9 +135,7 @@ def test_a_for_header_has_two_locations_both_before_the_loop(movavg, capsys):
     # binding: two stops, both before the first pass, and none at later passes. Its loop
     # note says so, in place of the per-pass warning.
     result = probe(movavg, capsys, at("FOR"), "--hits", "all")
-    assert result["hits"] == 2 and not per_pass(result)
-    assert [w for w in result["warnings"] if "is a loop header: it stops twice" in w]
-    assert [(row["stop"], row["stops"]) for row in result["rows"]] == [(1, 2), (2, 2)]
+    for_header(result)
     # A plain line stops once per pass: no warning, no stop.
     result = probe(movavg, capsys, at("PUSH"), "--hits", "all")
     assert result["hits"] == 4 and not per_pass(result)
@@ -182,9 +196,7 @@ def test_a_debugger_stalled_for_seconds_still_gives_the_loop_note_and_each_stop(
         for timer in timers:
             timer.join()
     assert len(timers) == 1
-    assert result["hits"] == 2 and not per_pass(result)
-    assert [w for w in result["warnings"] if "is a loop header: it stops twice" in w]
-    assert [(row["stop"], row["stops"]) for row in result["rows"]] == [(1, 2), (2, 2)]
+    for_header(result)
 
 
 @pytest.mark.timeout(600)

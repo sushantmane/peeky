@@ -6,6 +6,7 @@ the code (LLDB's disassembly), with clang and GCC."""
 
 import json
 import os
+import platform
 import shutil
 import subprocess
 
@@ -40,12 +41,28 @@ int main(void) {
 }
 """
 OUTPUT = "total=19 k=3 n=4"
+X86_64 = platform.machine().lower() in ("x86_64", "amd64")
+
+
+def x86_64_clang(compiler):
+    """Whether the fixture's ``compiler`` builds with clang for x86-64 (the "clang" case
+    builds with PEEKY_NATIVE_CC, which a GCC lane sets to gcc)."""
+    return (
+        X86_64 and compiler == "clang" and not _is_gcc(os.environ.get("PEEKY_NATIVE_CC", "clang"))
+    )
+
+
+def _is_gcc(compiler):
+    found = shutil.which(compiler)
+    version = (
+        subprocess.run([found, "--version"], capture_output=True, text=True) if found else None
+    )
+    return version is not None and "Free Software Foundation" in version.stdout
 
 
 def _gcc():
     gcc = shutil.which("gcc")
-    version = subprocess.run([gcc, "--version"], capture_output=True, text=True) if gcc else None
-    return gcc if version is not None and "Free Software Foundation" in version.stdout else None
+    return gcc if gcc and _is_gcc(gcc) else None
 
 
 @pytest.fixture(params=["clang", "gcc"])
@@ -99,7 +116,14 @@ def test_a_loop_header_that_stops_only_before_its_loop_says_so(loops, capsys):
     for marker in ("BODY", "DO_CLOSE", "ONE_LINE"):
         seen[marker] = probe(root, config, capsys, marker)
     print(compiler, seen)
-    for marker in ("FOR", "WHILE", "OUTER", "INNER"):
+    headers = ("FOR", "WHILE", "OUTER", "INNER")
+    if x86_64_clang(compiler):
+        # On x86-64 clang puts no jump to the condition on `while`'s line: its first code
+        # is the condition the loop returns to (line 7's `k = 0` falls into it), so it
+        # stops at each of its 4 checks, and gets no note.
+        headers = ("FOR", "OUTER", "INNER")
+        assert seen["WHILE"] == (4, [], line_of("WHILE")), seen["WHILE"]
+    for marker in headers:
         hits, notes, line = seen[marker]
         assert line == line_of(marker), (marker, seen[marker])
         assert notes == [
@@ -127,7 +151,8 @@ def test_session_start_on_a_loop_header_says_it_stops_before_the_loop(loops, cap
     compiler, root, config = loops
     if compiler != "clang":
         pytest.skip("the probe test covers GCC")
-    line = line_of("WHILE")
+    # x86-64's `while` stops at each pass (the probe test): its `for` stops only before.
+    line = line_of("FOR" if x86_64_clang(compiler) else "WHILE")
     command = ["session", "start", str(root), "--config", str(config), "--at", f"loops.c:{line}"]
     assert main(command) == 0
     try:

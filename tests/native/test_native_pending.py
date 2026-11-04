@@ -2,6 +2,7 @@
 
 import json
 import os
+import platform
 from types import SimpleNamespace
 
 import pytest
@@ -1085,8 +1086,10 @@ def test_a_header_structs_initializer_run_in_main_withholds_nothing(bucket, caps
 def test_a_live_for_counter_at_a_step_stop_on_its_header_is_shown(bucket, capsys):
     program = bucket.with_name("for.c")
     program.write_text(FOR)
-    # Hit 2 of line 4, then step to line 5 and back onto the header (the increment).
-    snapshot, shown = session_inspect(capsys, program, 4, 2, hit=2)
+    # Hit 2 of line 4, then step to line 5 and back onto the header (the increment). On
+    # x86-64 clang gives line 5 no code (arm64's jump to the increment): one step.
+    x86_64 = platform.machine().lower() in ("x86_64", "amd64")
+    snapshot, shown = session_inspect(capsys, program, 4, 1 if x86_64 else 2, hit=2)
     assert snapshot["location"].endswith("for.c:3"), snapshot["location"]
     assert shown["i"]["value"] == "1" and not shown["i"].get("unavailable"), shown["i"]
 

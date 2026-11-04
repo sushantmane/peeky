@@ -5709,6 +5709,19 @@ def run_probe(
                     "its arguments and input. Otherwise pick a line the program executes; "
                     "see `peeky describe`."
                 )
+            moved = (placed.get(line) or {}).get("line")
+            if type(moved) is int and moved != line:
+                # The debugger's one place for the line may be code that never ran (GCC's
+                # `.cold` part of an optimized function): the line's own may have run.
+                message += (
+                    f". The debugger placed the breakpoint for line {line} on code of line "
+                    f"{moved}, so the program may have run line {line} without a stop there"
+                )
+                hint = (
+                    f"Line {line} may have no code of its own, or the debugger placed its "
+                    "breakpoint only on code that did not run (an optimized build's split-off "
+                    "part): probe another line from `peeky describe`, or an unoptimized build."
+                )
             result["error"] = {
                 "code": "NO_STOP",
                 "message": message,
