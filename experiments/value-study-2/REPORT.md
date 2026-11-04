@@ -8,18 +8,19 @@ before any agent run, and the reach check is [REACH.md](REACH.md). Round 1 is
 **Correction (2026-11-03):** the count of attempts that printed program values was wrong both
 ways. It took text Peeky didn't print for Peeky's: a cookbook's example output that the same
 shell call printed, or the project's code or a test's output printed beside `peeky … --help` or
-a probe. And it missed Peeky's own output where a call ran Peeky from a Python script, or after a
-quoted `;`, where its reading of the command line broke. It now counts Peeky's value lines in the
-output of every call that runs Peeky, directly or from a script the call runs
-([recount_values.py](harness/recount_values.py), round 1's `metrics.py`). It reads the README's
-definition narrowly: a probe's table rows, `name: type = value` lines where `peeky session` ran,
-and `"value"` fields where Peeky printed JSON. A line of a Peeky doc the call read never counts,
-nor anything a call that only asked for `--help` printed. `peeky-first` attempts that printed
-values: 74 → 67 of 87. On reached bugs that is 58 → 60 of 60, on refused bugs 10 → 1 of 21, and
-on the two "other" bugs 6 of 6, unchanged. Nine attempts no longer count, six of which had
-counted only doc lines. Two valkey attempts that ran Peeky from Python now count. In `peeky`:
-3 → 2 of 87, all on reached bugs. No other number in this report changed, and the conclusions
-stand.
+a probe. And it missed Peeky's own output where a call ran Peeky from Python code in a
+here-document, or after a quoted `;`, where its reading of the command line broke. It now counts
+Peeky's value lines in the output of calls that run Peeky directly, or from inline Python or
+shell code the call holds: a here-document, or `-c` code
+([recount_values.py](harness/recount_values.py), round 1's `metrics.py`). It doesn't read a
+script file a call runs, such as `python3 repro.py`. It reads the README's definition narrowly:
+a probe's table rows, `name: type = value` lines where `peeky session` ran, and `"value"` fields
+where Peeky printed JSON. A line of a Peeky doc the call read never counts, nor anything a call
+that only asked for `--help` printed. `peeky-first` attempts that printed values: 74 → 67 of 87.
+On reached bugs that is 58 → 60 of 60, on refused bugs 10 → 1 of 21, and on the two "other"
+bugs 6 of 6, unchanged. Nine attempts no longer count, six of which had counted only doc lines.
+Two valkey attempts that ran Peeky from Python now count. In `peeky`: 3 → 2 of 87, all on
+reached bugs. No other number in this report changed, and the conclusions stand.
 
 ## Conclusion
 
@@ -163,13 +164,13 @@ These splits are exploration.
   session subcommand invocations (`get` 13, `start` 12, `close` 9, `continue` 7, `step` 4,
   `list` 3, `report` 1). A few more ran `sql`, `queries` and `verify`.
 - **Values:** the count of program values printed is approximate (README, "Outcomes"). It counts
-  Peeky's value lines in the output of each call that runs Peeky, directly or from a script the
-  call runs, as the correction above reads the definition. It misses Peeky run from a script
-  file, and output a script kept rather than printed. It can still count a line of the same form
-  that another program printed beside Peeky's. It also counts a line whose value Peeky couldn't
-  read (`<no readable value: …>`), but each attempt it counts also printed a value Peeky read.
-  The counts of Peeky commands are unchanged: they miss Peeky run from scripts, and a command
-  after a quoted `;`.
+  Peeky's value lines in the output of each call that runs Peeky directly, or from inline Python or
+  shell code in the call (a here-document, or `-c`), as the correction above reads the definition.
+  It misses Peeky run from a script file (`python3 repro.py`), and output a script kept rather than
+  printed. It can still count a line of the same form that another program printed beside Peeky's.
+  It also counts a line whose value Peeky couldn't read (`<no readable value: …>`), but each attempt
+  it counts also printed a value Peeky read. The counts of Peeky commands are unchanged: they miss
+  Peeky run from scripts, and a command after a quoted `;`.
 - **By reach group:**
 
 | Arm | Group | Attempts | Ran Peeky | Printed a value |
@@ -411,11 +412,12 @@ values. Without the request, 2 of 60 did.
 - **Intervals** resample bugs from each bug's observed rate over 3 attempts, as round 1 did. A
   `+0 to +0` interval means every bug had the same observed rate in both arms. It doesn't prove the
   arms equal.
-- **Measures.** The count of values printed sees Peeky run from a script the call runs, but not
-  from a script file. It no longer counts lines of Peeky's docs (correction, above), but it can
-  still count a line of other output a call printed beside Peeky's. The counts of Peeky commands
-  miss Peeky run from scripts: valkey's `peeky-first` attempts ran Peeky inside Python scripts,
-  and the judges counted those. The judges' checks are the firmer measure.
+- **Measures.** The count of values printed sees Peeky run from inline code in the call (a
+  here-document, or `-c`), but not from a script file. It no longer counts lines of Peeky's docs
+  (correction, above), but it can still count a line of other output a call printed beside Peeky's.
+  The counts of Peeky commands miss Peeky run from scripts: valkey's `peeky-first` attempts ran
+  Peeky inside Python scripts, and the judges counted those. The judges' checks are the firmer
+  measure.
 - **Judging.** One judge read each attempt. The sphinx-10614 split is reported both ways. Two judges
   read upstream history to settle it, beyond their input.
 - **Time.** Other jobs shared the machine, and attempts took longer than round 1's in every arm.

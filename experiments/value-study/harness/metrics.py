@@ -452,8 +452,9 @@ def collect(run_dir, language="", test_hint="", arm="", peeky_sha=None):
 # What Peeky printed of the program's values in a shell command's output: a probe table's rows,
 # a session's `name: type = value` lines, and a JSON answer's "value" fields. An approximate
 # count, for comparing arms; the judge checks the values themselves. It counts in the output of
-# every command that runs Peeky (peeky_runs: directly, or from a script the command runs). That
-# output also holds what the command's other programs printed, so only Peeky's forms count:
+# every command that runs Peeky (peeky_runs): directly, or from inline Python or shell code the
+# command holds (a here-document, or `-c`), but not from a script file it runs. That output
+# also holds what the command's other programs printed, so only Peeky's forms count:
 # - nothing, where its Peeky commands only asked for `--help`;
 # - no line of a Peeky doc the command read (`sed -n … /opt/peeky/docs/…`), as printed or as
 #   grep -n, nl or cat -n number it: the cookbooks' example outputs look like Peeky's;
