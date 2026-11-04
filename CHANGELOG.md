@@ -33,10 +33,12 @@
 
 - **Where round 2's `peeky-first` set-up went, and ADR 0009.**
   `experiments/value-study-2/SETUP_COST.md` sorts every tool call before each attempt's first
-  stop (`harness/setup_cost.py`). A median attempt spent 13 calls, 11.1 AI credits and 71 s
-  before it: docs in every attempt, and in Java about 3 JVMs started by hand and an attach
-  config per probe. [ADR 0009](docs/adr/0009-first-question.md) designs `--test`, which takes
-  the project's own test command, and a first-probe page of about 2 KB.
+  stop (`harness/setup_cost.py`; a doc's example output printed in the same call isn't taken
+  for a stop). The median attempt that stopped (68 of 87) spent 14 calls, 11.6 AI credits and
+  75 s before it. 86 of 87 read the guide, `PROJECT.md` and their language's page before their
+  first probe, and the median Java attempt started 3 JVMs by hand. [ADR
+  0009](docs/adr/0009-first-question.md) designs `--test`, which takes the project's own test
+  command, and a first-probe page of about 2 KB.
 - **Rust workspaces: an integration test finds its package's binaries (#488).** bat's
   integration test runs `bat` through assert_cmd's `Command::cargo_bin`, which reads
   `CARGO_BIN_EXE_bat`, else looks beside the test's own executable. Peeky gave neither, so the

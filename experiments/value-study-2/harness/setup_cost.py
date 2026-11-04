@@ -12,7 +12,8 @@ from results/setup_cost.json alone (the default input). Prints the tables in Mar
 A tool call's category is the first of these that applies:
 
 - `stop`: the call whose output shows Peeky's first stop (`peeky: hit N/`, `state: stopped at`,
-  or a JSON answer with hits).
+  or a JSON answer with hits). Lines of a Peeky doc the same call printed don't count here or
+  below: the cookbooks' example outputs and errors look like Peeky's.
 - `peeky_refused`: a Peeky command that printed an error code, a usage error, or ended with no
   stop.
 - `peeky_other`: another Peeky command (`describe`, `build`, `sql`, a session's `get`).
@@ -103,15 +104,17 @@ def classify(command, output, language, matcher):
     """(category, details) for one bash command and what it printed."""
     subs = metrics.peeky_subcommands(command)
     details = {}
-    codes = sorted(set(CODE.findall(output)))
-    usage = USAGE_ERROR.search(output)
+    docs = sorted({(a or b) for a, b in DOC_FILE.findall(command)})
+    # A doc's example outputs and errors, printed by the same call, aren't Peeky's.
+    shown = without_doc_lines(output, docs)
+    codes = sorted(set(CODE.findall(shown)))
+    usage = USAGE_ERROR.search(shown)
     if usage:
         codes.append("USAGE: " + usage.group(1)[:80])
-    docs = sorted({(a or b) for a, b in DOC_FILE.findall(command)})
     help_only = (
         bool(subs)
         and all(re.search(r"(^|\s)(--help|-h)(\s|$)", command) for _ in subs)
-        and not STOP_TEXT.search(output)
+        and not STOP_TEXT.search(shown)
     )
     if docs or help_only or PEEKY_SOURCE.search(metrics.strip_heredocs(command)):
         details["docs"] = docs + (["--help"] if help_only else [])
@@ -154,10 +157,10 @@ def classify(command, output, language, matcher):
         details["peeky"] = subs or ["(in a script)"]
         if codes:
             details["codes"] = codes
-            details["messages"] = sorted({scrub(m)[:160] for m in MESSAGE.findall(output)})[:4]
-        elif NO_HITS.search(output):
+            details["messages"] = sorted({scrub(m)[:160] for m in MESSAGE.findall(shown)})[:4]
+        elif NO_HITS.search(shown):
             details["codes"] = ["NO_STOP (finished with 0 hits)"]
-    if peeky and (STOP_TEXT.search(output) or STOP_JSON.search(output)):
+    if peeky and (STOP_TEXT.search(shown) or STOP_JSON.search(shown)):
         return "stop", details
     if peeky and details.get("codes"):
         return "peeky_refused", details
@@ -339,6 +342,19 @@ def doc_text(name):
         )
         _DOCS[name] = found.stdout.decode(errors="replace") if found.returncode == 0 else None
     return _DOCS[name]
+
+
+def without_doc_lines(output, docs):
+    """The output without the lines of the Peeky docs the command read."""
+    lines = {
+        line.strip()
+        for name in docs
+        for line in (doc_text(name) or "").splitlines()
+        if line.strip()
+    }
+    if not lines:
+        return output
+    return "\n".join(line for line in output.splitlines() if line.strip() not in lines)
 
 
 def _lines_bytes(text, first, last):

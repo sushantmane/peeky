@@ -6,18 +6,23 @@ Status: accepted, from the owner's "lets do" on round 2's next steps. The eviden
 ## Context
 
 Round 2 of the value study asked agents to use Peeky before editing. They did, in all 87
-attempts, and it cost 8.6 more AI credits, 88 s and 7 tool calls per bug than control, on every
-one of the 29 bugs (`experiments/value-study-2/REPORT.md`). The transcripts say where that
-went (`SETUP_COST.md` beside it):
+attempts, and it cost a median of 8.6 more AI credits, 88 s and 7 tool calls per bug than
+control. Credits and wall time were higher on all 29 bugs; tool calls on 28
+(`experiments/value-study-2/REPORT.md`). The transcripts say where that went (`SETUP_COST.md`
+beside it):
 
-- **Before the first stop,** a median attempt made 13 tool calls, spent 11.1 credits and 71 s:
-  40% of its credits. By call, set-up was 5.0 credits per bug, and reading Peeky's docs 4.2 of it.
-- **Docs:** every attempt read the 20 KB guide, `PROJECT.md` and its language's page before the
-  first probe, and most a cookbook section too.
-- **Java** cost most: 24 calls and 17.5 credits to the first stop. No attempt used the guide's
-  Maven or Gradle recipe. Each started about 3 JVMs by hand (`jshell`, `java`, `javac` with
-  JDWP's agent), on classpaths copied from surefire's reports, and wrote an attach config into
-  each probe. 30 probes in 16 attempts then ended `NO_STOP`, on a JVM that never ran the line.
+- **Before the first stop,** in the 68 of 87 attempts that stopped, the median attempt made 14
+  tool calls, spent 11.6 credits and 75 s: 41% of its credits. By call, set-up was 5.3 credits
+  per bug, and reading Peeky's docs 4.2 of it.
+- **Docs:** 86 of 87 attempts read the 20 KB guide, `PROJECT.md` and their language's page
+  before their first probe; the other read its language's page one call after. 48 of the 60
+  Java, Rust and C/C++ attempts read a cookbook section too.
+- **Java** cost most: a median of 24 calls and 17.5 credits to the first stop. No attempt used
+  the guide's Maven or Gradle recipe. They started JVMs by hand (`jshell`, `java`, `javac` with
+  JDWP's agent) on classpaths copied from surefire's reports or Lombok's build: the median Java
+  attempt started 3, and all 21 started at least one. 51 of their 53 attach configs were
+  written inline in the probe command. 30 probes in 16 attempts then ended `NO_STOP`: the line
+  didn't run while Peeky was attached.
 - **Refusals** a parser or a message could have saved: an absolute path in an attach config
   (6), `--set-at 'LINE NAME=VALUE'` as one word (9), `--run-module` with a module other than
   pytest (7), and Rust's `BUILD_REQUIRED` after git's index changed (3).

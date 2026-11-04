@@ -8,11 +8,12 @@ the evidence for [ADR 0009](../../docs/adr/0009-first-question.md).
 ## How it was measured
 
 [harness/setup_cost.py](harness/setup_cost.py) reads each attempt's session events and sorts
-every tool call up to the first one whose output shows a Peeky stop. A call's category is the
-first that applies: the stop; a Peeky run refused or ended with no stop; another Peeky run
-(`describe`, `build`); starting a JVM to attach to; writing a Peeky config; reading Peeky's
-docs, `--help` or source; the project's build or tests; waiting on a background command; and
-anything else, mostly reading the project. The per-call records are in
+every tool call up to the first one whose output shows a Peeky stop. Lines of a Peeky doc that
+the same call printed don't count as Peeky's output: the cookbooks' examples look like stops and
+errors. A call's category is the first that applies: the stop; a Peeky run refused or ended
+with no stop; another Peeky run (`describe`, `build`); starting a JVM to attach to; writing a
+Peeky config; reading Peeky's docs, `--help` or source; the project's build or tests; waiting on
+a background command; and anything else, mostly reading the project. The per-call records are in
 `results/setup_cost.json`, with host paths removed, and the script makes the tables below from
 them (`harness/setup_cost.py`; `--runs <raw runs>` reads the transcripts again).
 
@@ -34,30 +35,34 @@ as a preview, so it counts as no doc bytes.
 
 ## What it shows
 
-**Before its first stop, a median attempt made 13 tool calls and spent 11.1 credits and 71 s:
-40% of its credits.** The set-up in it, by the second measure, was a median of 5.0 credits per
-bug, against the 8.6 credits `peeky-first` cost over control. Docs were 4.2 of the 5.0.
+**68 of the 87 attempts stopped. Before its first stop, the median one made 14 tool calls and
+spent 11.6 credits and 75 s: 41% of its credits.** The set-up in it, by the second measure, was
+a median of 5.3 credits per bug, against the 8.6 credits `peeky-first` cost over control. Docs
+were 4.2 of the 5.3.
 
 | Language | Calls to the first stop | Credits | Seconds | Set-up credits per bug | Extra over control per bug |
 | --- | --- | --- | --- | --- | --- |
 | Java | 24 | 17.5 | 130 | 9.2 | +20.7 |
 | C | 11 | 11.1 | 85 | 5.1 | +12.3 |
 | C++ | never stopped | | | 5.6 | +8.6 |
-| Rust | 10 | 8.7 | 64 | 4.5 | +8.4 |
+| Rust | 11 (8 of 18 stopped) | 9.9 | 102 | 5.0 | +8.4 |
 | Python | 12 | 10.4 | 61 | 4.0 | +4.9 |
 
-- **Docs, in every attempt.** All 87 read the 20 KB guide, `PROJECT.md` and their language's
-  page (16 to 20 KB) before the first probe. Most Java, Rust and C/C++ attempts also read a
-  cookbook section, and half ran `peeky probe --help`. A median of 5 calls and 33 KB of docs
+- **Docs, in 86 of 87 attempts.** 86 read the 20 KB guide, `PROJECT.md` and their language's
+  page (16 to 20 KB) before their first Peeky run. The other, `sphinx-doc__sphinx-7889` attempt
+  2, read the guide and `PROJECT.md`, ran its first probe at call 5, and read `lang/python.md`
+  at call 6. Before the first stop, 48 of the 60 Java, Rust and C/C++ attempts also read a
+  cookbook section, and 54 of 87 ran a Peeky `--help`. A median of 6 calls and 33 KB of docs
   reached the model before the first stop. Several first `cat` the guide, got a preview, and
   read it again in parts.
 - **Java: a JVM and an attach config, by hand.** No attempt used the guide's Maven or Gradle
-  recipe (`-Dmaven.surefire.debug`, `--debug-jvm`). Instead they ran a reproducer: 16 of 21
+  recipe (`-Dmaven.surefire.debug`, `--debug-jvm`). Instead they ran a reproducer: 17 of 21
   started `jshell` and 6 `java` with JDWP's agent, on a classpath copied out of surefire's
-  reports or Lombok's build, and 4 started `javac` with Lombok's processor. That is 58 JVMs
-  started by hand, about 3 per attempt, and 52 attach configs written, 50 of them inline in the
-  probe command. Then 30 probes in 16 attempts ended with `NO_STOP`: the JVM they attached to
-  never ran the line (the wrong classpath, the wrong JVM, or code that ran before the attach).
+  reports or Lombok's build, and 4 started `javac` with Lombok's processor. That is 59 JVMs
+  started by hand before the first stop: the median Java attempt started 3, and all 21 started
+  at least one. 53 attach configs were written, 51 of them inline in the probe command. Then 30
+  probes in 16 attempts ended with `NO_STOP`: the line didn't run while Peeky was attached (the
+  wrong classpath, the wrong JVM, or code that ran before the attach).
   The median Java attempt reached its first stop at call 24.
 - **Refusals that a better message or a looser parser would have saved:**
   - Java: `Attach paths must be relative to the source root`, 6 times in 6 attempts, for an
@@ -66,12 +71,15 @@ bug, against the 8.6 credits `peeky-first` cost over control. Docs were 4.2 of t
     attempts. And `--run-module` with a module other than pytest (`timeit`,
     `sphinx.cmd.build`), 7 times.
   - Rust: `BUILD_REQUIRED` after git's index changed, 3 times, and `BUDGET_EXHAUSTED` on axum
-    (#483), 5. Rust attempts mostly used the image's prebuilt config; 3 wrote their own.
+    (#483), 5 times in 3 attempts. 8 of 18 Rust attempts wrote a workspace config of their own
+    before the first stop; the tables count 6 of them, as two wrote theirs inside a `patch`
+    heredoc, which the script doesn't read as a write.
   - C++: `UNSUPPORTED` for units without MD5s or with `-O0` after `-stdlib=libc++`, 17 times,
     on reproducers the agents compiled themselves, and `PROVENANCE_CHANGED`, 5.
-- **What the first stop looked like:** Java's was an attach probe with a config (20 of 21),
-  Python's `--run-module pytest` (17) or `--run` (7), C's `--binary` (6, the rest in scripts),
-  and Rust's the image's config (7) or a session.
+- **What the first stop looked like:** Java's was an attach config in all 21 (19 probes and 2
+  sessions), Python's `--run-module pytest` (17), `--run` (7) or neither (3), C's `--binary` (6
+  of 12; 5 in scripts and one a background probe), and Rust's the image's config (6 of 8) or the
+  attempt's own (2).
 
 So the set-up has three parts, in this order of cost: docs read before the first probe,
 Java's hand-started JVM and attach config, and refused runs. A command that takes the
@@ -91,8 +99,8 @@ The script's output, unedited.
 | cpp | 9 | 0 | nan | nan | nan | 10 | 7 | 32 | 0 | 0 | 3 |
 | java | 21 | 21 | 24 | 17.5 | 130 | 16 | 6 | 36 | 3 | 3 | 2 |
 | python | 27 | 27 | 12 | 10.4 | 61 | 6 | 4 | 29 | 0 | 0 | 1 |
-| rust | 18 | 13 | 10 | 8.7 | 64 | 6 | 6 | 39 | 0 | 0 | 1 |
-| all | 87 | 73 | 13 | 11.1 | 71 | 7 | 5 | 33 | 0 | 0 | 1 |
+| rust | 18 | 8 | 11 | 9.9 | 102 | 8 | 6 | 39 | 0 | 0 | 2 |
+| all | 87 | 68 | 14 | 11.6 | 75 | 8 | 6 | 33 | 0 | 0 | 1 |
 
 Calls, credits (the session's, cumulative) and seconds run to the call that showed the first stop, in attempts that stopped. The other columns count the calls before the first stop, or all calls if there was none. Setup calls are docs, config, debuggee, wait, and Peeky runs that didn't stop. A doc read is any call that read Peeky's docs, `--help` or source; Doc KB is the docs' share of what those calls printed. A config write is any call that wrote one, inline ones included.
 
@@ -104,8 +112,8 @@ Calls, credits (the session's, cumulative) and seconds run to the call that show
 | cpp | 3 | 18.0 | 23.6 | +8.6 | 5.6 | 4.1 | 0.0 |
 | java | 7 | 26.4 | 51.2 | +20.7 | 9.2 | 5.6 | 0.0 |
 | python | 9 | 18.1 | 24.6 | +4.9 | 4.0 | 3.2 | 0.5 |
-| rust | 6 | 17.4 | 27.1 | +8.4 | 4.5 | 4.2 | 0.9 |
-| all | 29 | 18.1 | 29.5 | +8.6 | 5.0 | 4.2 | 0.3 |
+| rust | 6 | 17.4 | 27.1 | +8.4 | 5.0 | 4.4 | 0.0 |
+| all | 29 | 18.1 | 29.5 | +8.6 | 5.3 | 4.2 | 0.0 |
 
 A call's credits: its share of the output of the model call that asked for it, plus what its output cost in context afterwards (written to the cache once, read again by each later model call). The system prompt, the task and the model's own text aren't attributed to a call. Set-up is the set-up calls' credits, and the docs' share of a call that read docs among other things.
 
@@ -115,10 +123,10 @@ A call's credits: its share of the output of the model call that asked for it, p
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | c | 65 (73 cr) | 0 (0 cr) | 0 (0 cr) | 4 (1 cr) | 11 (10 cr) | 0 (0 cr) | 0 (0 cr) | 60 (60 cr) | 12 (11 cr) |
 | cpp | 55 (60 cr) | 0 (0 cr) | 0 (0 cr) | 25 (10 cr) | 6 (5 cr) | 43 (52 cr) | 0 (0 cr) | 105 (89 cr) | 0 (0 cr) |
-| java | 134 (176 cr) | 1 (1 cr) | 60 (31 cr) | 38 (8 cr) | 9 (11 cr) | 6 (5 cr) | 77 (17 cr) | 140 (159 cr) | 21 (9 cr) |
+| java | 135 (178 cr) | 1 (1 cr) | 61 (31 cr) | 38 (8 cr) | 9 (11 cr) | 6 (5 cr) | 78 (18 cr) | 140 (159 cr) | 21 (8 cr) |
 | python | 120 (137 cr) | 0 (0 cr) | 0 (0 cr) | 26 (13 cr) | 12 (15 cr) | 2 (2 cr) | 0 (0 cr) | 133 (118 cr) | 27 (13 cr) |
-| rust | 89 (91 cr) | 0 (0 cr) | 0 (0 cr) | 19 (10 cr) | 7 (2 cr) | 43 (44 cr) | 0 (0 cr) | 102 (88 cr) | 13 (11 cr) |
-| all | 463 (536 cr) | 1 (1 cr) | 60 (31 cr) | 112 (43 cr) | 45 (43 cr) | 94 (103 cr) | 77 (17 cr) | 540 (514 cr) | 73 (44 cr) |
+| rust | 96 (101 cr) | 1 (2 cr) | 0 (0 cr) | 31 (17 cr) | 14 (6 cr) | 66 (65 cr) | 0 (0 cr) | 127 (109 cr) | 8 (3 cr) |
+| all | 471 (548 cr) | 2 (3 cr) | 61 (31 cr) | 124 (49 cr) | 52 (47 cr) | 117 (124 cr) | 78 (18 cr) | 565 (535 cr) | 68 (35 cr) |
 
 Each cell: calls, and their credits as above, summed over attempts.
 
@@ -139,12 +147,12 @@ Each cell: calls, and their credits as above, summed over attempts.
 | python | USAGE | 9 | 8 |
 | python | NO_STOP | 7 | 6 |
 | python | NOT_FOUND | 1 | 1 |
+| rust | INVALID_BREAKPOINT | 9 | 8 |
+| rust | INVALID_REQUEST | 8 | 7 |
 | rust | BUDGET_EXHAUSTED | 5 | 3 |
-| rust | INVALID_REQUEST | 5 | 4 |
-| rust | INVALID_BREAKPOINT | 4 | 3 |
 | rust | BUILD_REQUIRED | 3 | 3 |
-| rust | DEBUGGER_ERROR | 1 | 1 |
-| rust | PROVENANCE_CHANGED | 1 | 1 |
+| rust | DEBUGGER_ERROR | 2 | 2 |
+| rust | NO_STOP | 2 | 1 |
 
 ### Peeky docs read before the first stop
 
@@ -164,7 +172,7 @@ Each cell: calls, and their credits as above, summed over attempts.
 | java | PROJECT.md | 21 of 21 |
 | java | lang/java.md | 21 of 21 |
 | java | lang/java-cookbook.md | 19 of 21 |
-| java | --help | 16 of 21 |
+| java | --help | 17 of 21 |
 | java | JAVA_ATTACH.md | 7 of 21 |
 | python | AGENT_GUIDE.md | 27 of 27 |
 | python | PROJECT.md | 27 of 27 |
@@ -175,7 +183,7 @@ Each cell: calls, and their credits as above, summed over attempts.
 | rust | PROJECT.md | 18 of 18 |
 | rust | lang/rust.md | 18 of 18 |
 | rust | lang/rust-cookbook.md | 14 of 18 |
-| rust | --help | 10 of 18 |
+| rust | --help | 13 of 18 |
 
 ### Config writes and debuggee starts before the first stop
 
@@ -183,16 +191,16 @@ Each cell: calls, and their credits as above, summed over attempts.
 | --- | --- | --- | --- | --- | --- | --- |
 | c | 0 | 0 | 0 | 0 | 0 | 0 |
 | cpp | 0 | 0 | 0 | 0 | 0 | 0 |
-| java | 52 | 0 | 0 | 50 | 58 | 2 |
+| java | 53 | 0 | 0 | 51 | 59 | 2 |
 | python | 0 | 0 | 0 | 0 | 0 | 0 |
-| rust | 0 | 3 | 0 | 3 | 0 | 0 |
-| all | 52 | 3 | 0 | 53 | 58 | 2 |
+| rust | 0 | 10 | 0 | 6 | 0 | 0 |
+| all | 53 | 10 | 0 | 57 | 59 | 2 |
 
 ### How the Java attempts started the JVM they attached to
 
 | Started with | Attempts | Starts |
 | --- | --- | --- |
-| jshell | 16 | 44 |
+| jshell | 17 | 45 |
 | java | 6 | 8 |
 | javac | 4 | 4 |
 | other | 1 | 2 |

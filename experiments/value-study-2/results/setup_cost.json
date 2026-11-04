@@ -5213,10 +5213,10 @@
   "unattributed_credits": 5.051,
   "wall_seconds": 322.6,
   "first_stop": {
-   "n": 9,
-   "seconds": 27.8,
-   "credits": 7.211,
-   "model_calls": 5
+   "n": 20,
+   "seconds": 171.0,
+   "credits": 20.93,
+   "model_calls": 14
   },
   "calls": [
    {
@@ -5323,7 +5323,7 @@
    {
     "n": 9,
     "tool": "bash",
-    "category": "stop",
+    "category": "peeky_other",
     "credits": 1.004,
     "seconds": 27.8,
     "output_bytes": 7769,
@@ -5334,14 +5334,6 @@
     "peeky": [
      "build",
      "describe"
-    ],
-    "codes": [
-     "BUILD_REQUIRED",
-     "INVALID_BREAKPOINT"
-    ],
-    "messages": [
-     "Line 208 has no code to stop at in `util`'s build: it is in `util::only_app`, a generic or inlined function whose code only the crates that use it compile, for ",
-     "No current Peeky build of this workspace: util/src/lib.rs changed since `peeky build` ran. Run `peeky build . --config rust.json` again, or add --build"
     ],
     "doc_bytes": 6319
    },
@@ -5576,7 +5568,7 @@
   "solved": true,
   "tool_calls": 32,
   "model_calls": 22,
-  "ai_credits": 32.256,
+  "ai_credits": 32.257,
   "unattributed_credits": 5.147,
   "wall_seconds": 273.5,
   "first_stop": null,
@@ -5955,12 +5947,7 @@
   "ai_credits": 30.048,
   "unattributed_credits": 4.766,
   "wall_seconds": 268.3,
-  "first_stop": {
-   "n": 12,
-   "seconds": 53.1,
-   "credits": 9.846,
-   "model_calls": 7
-  },
+  "first_stop": null,
   "calls": [
    {
     "n": 1,
@@ -6103,26 +6090,14 @@
    {
     "n": 12,
     "tool": "bash",
-    "category": "stop",
+    "category": "docs",
     "credits": 1.304,
     "seconds": 53.1,
     "output_bytes": 10837,
     "command": "sed -n '2121,2245p' /opt/peeky/docs/lang/rust-cookbook.md; cd /testbed && cat /opt/peeky/study/prebuild.status; cat /opt/peeky/study/prepare.sh | head -65; peeky build --help | head -75",
     "docs": [
-     "lang/rust-cookbook.md"
-    ],
-    "peeky": [
-     "build"
-    ],
-    "codes": [
-     "BUILD_REQUIRED",
-     "INVALID_BREAKPOINT",
-     "INVALID_REQUEST"
-    ],
-    "messages": [
-     "Line 208 has no code to stop at in `util`'s build: it is in `util::only_app`, a generic or inlined function whose code only the crates that use it compile, for ",
-     "No current Peeky build of this workspace: util/src/lib.rs changed since `peeky build` ran. Run `peeky build . --config rust.json` again, or add --build",
-     "Peeky builds registry dependencies only from `cargo vendor`'s copy, and /work/ws/vendor doesn't exist (`smallnum 1.0.0` come from crates.io). Run `cd /work/ws &"
+     "lang/rust-cookbook.md",
+     "--help"
     ],
     "doc_bytes": 10837
    },
@@ -18104,10 +18079,10 @@
   "unattributed_credits": 7.091,
   "wall_seconds": 365.1,
   "first_stop": {
-   "n": 12,
-   "seconds": 58.0,
-   "credits": 10.882,
-   "model_calls": 7
+   "n": 15,
+   "seconds": 65.1,
+   "credits": 12.434,
+   "model_calls": 8
   },
   "calls": [
    {
@@ -18240,16 +18215,14 @@
    {
     "n": 12,
     "tool": "bash",
-    "category": "stop",
+    "category": "docs",
     "credits": 1.82,
     "seconds": 58.0,
     "output_bytes": 12183,
     "command": "sed -n '665,795p' /opt/peeky/docs/lang/java-cookbook.md; sed -n '180,210p' /opt/peeky/docs/lang/java-cookbook.md; find test -name '*TestJavac*' -o -name '*AbstractRunTests*' -o -name '*RunTestsViaDelombok*'; find website -iname '*changelog*",
     "docs": [
-     "lang/java-cookbook.md"
-    ],
-    "peeky": [
-     "probe"
+     "lang/java-cookbook.md",
+     "--help"
     ],
     "doc_bytes": 9445
    },
@@ -18607,7 +18580,7 @@
   "solved": true,
   "tool_calls": 21,
   "model_calls": 14,
-  "ai_credits": 19.633,
+  "ai_credits": 19.634,
   "unattributed_credits": 3.179,
   "wall_seconds": 167.9,
   "first_stop": {
@@ -23529,7 +23502,7 @@
   "solved": true,
   "tool_calls": 22,
   "model_calls": 15,
-  "ai_credits": 20.109,
+  "ai_credits": 20.108,
   "unattributed_credits": 3.736,
   "wall_seconds": 177.9,
   "first_stop": {
@@ -25202,12 +25175,7 @@
   "ai_credits": 24.73,
   "unattributed_credits": 3.942,
   "wall_seconds": 337.1,
-  "first_stop": {
-   "n": 10,
-   "seconds": 63.5,
-   "credits": 8.74,
-   "model_calls": 6
-  },
+  "first_stop": null,
   "calls": [
    {
     "n": 1,
@@ -25317,29 +25285,14 @@
    {
     "n": 10,
     "tool": "bash",
-    "category": "stop",
+    "category": "docs",
     "credits": 1.961,
     "seconds": 63.5,
     "output_bytes": 11975,
     "command": "sed -n '2121,2275p' /opt/peeky/docs/lang/rust-cookbook.md && cd /testbed && sed -n '40,58p' tokio/src/sync/broadcast.rs && peeky session start --help | head -65 && peeky describe --help | head -45",
     "docs": [
-     "lang/rust-cookbook.md"
-    ],
-    "peeky": [
-     "session start",
-     "describe"
-    ],
-    "codes": [
-     "BUILD_REQUIRED",
-     "INVALID_BREAKPOINT",
-     "INVALID_REQUEST",
-     "MUTATION_REJECTED"
-    ],
-    "messages": [
-     "Line 208 has no code to stop at in `util`'s build: it is in `util::only_app`, a generic or inlined function whose code only the crates that use it compile, for ",
-     "No current Peeky build of this workspace: util/src/lib.rs changed since `peeky build` ran. Run `peeky build . --config rust.json` again, or add --build",
-     "Peeky builds registry dependencies only from `cargo vendor`'s copy, and /work/ws/vendor doesn't exist (`smallnum 1.0.0` come from crates.io). Run `cd /work/ws &",
-     "`x` cannot be changed at util/src/lib.rs:18, at any stop of this build: in util::kept, a call to `smallnum::keep` (dependency `smallnum`) on line 17 is given a "
+     "lang/rust-cookbook.md",
+     "--help"
     ],
     "doc_bytes": 11928
    },
@@ -25522,12 +25475,7 @@
   "ai_credits": 24.739,
   "unattributed_credits": 3.184,
   "wall_seconds": 242.1,
-  "first_stop": {
-   "n": 11,
-   "seconds": 55.9,
-   "credits": 10.569,
-   "model_calls": 7
-  },
+  "first_stop": null,
   "calls": [
    {
     "n": 1,
@@ -25649,24 +25597,14 @@
    {
     "n": 11,
     "tool": "bash",
-    "category": "stop",
+    "category": "docs",
     "credits": 1.283,
     "seconds": 55.9,
     "output_bytes": 7449,
     "command": "sed -n '2121,2225p' /opt/peeky/docs/lang/rust-cookbook.md && peeky session start --help",
     "docs": [
-     "lang/rust-cookbook.md"
-    ],
-    "peeky": [
-     "session start"
-    ],
-    "codes": [
-     "BUILD_REQUIRED",
-     "INVALID_REQUEST"
-    ],
-    "messages": [
-     "No current Peeky build of this workspace: util/src/lib.rs changed since `peeky build` ran. Run `peeky build . --config rust.json` again, or add --build",
-     "Peeky builds registry dependencies only from `cargo vendor`'s copy, and /work/ws/vendor doesn't exist (`smallnum 1.0.0` come from crates.io). Run `cd /work/ws &"
+     "lang/rust-cookbook.md",
+     "--help"
     ],
     "doc_bytes": 7449
    },
@@ -26059,12 +25997,7 @@
   "ai_credits": 16.916,
   "unattributed_credits": 2.767,
   "wall_seconds": 133.9,
-  "first_stop": {
-   "n": 7,
-   "seconds": 20.1,
-   "credits": 5.206,
-   "model_calls": 4
-  },
+  "first_stop": null,
   "calls": [
    {
     "n": 1,
@@ -26137,29 +26070,14 @@
    {
     "n": 7,
     "tool": "bash",
-    "category": "stop",
+    "category": "docs",
     "credits": 1.674,
     "seconds": 20.1,
     "output_bytes": 17990,
     "command": "sed -n '/## A Rust workspace/,+155p' /opt/peeky/docs/lang/rust-cookbook.md; grep -nE 'workspace|sources|test|arguments|config' /opt/peeky/docs/lang/rust-cookbook.md | head -45; peeky build --help && peeky probe --help | head -95",
     "docs": [
-     "lang/rust-cookbook.md"
-    ],
-    "peeky": [
-     "build",
-     "probe"
-    ],
-    "codes": [
-     "BUILD_REQUIRED",
-     "INVALID_BREAKPOINT",
-     "INVALID_REQUEST",
-     "MUTATION_REJECTED"
-    ],
-    "messages": [
-     "Line 208 has no code to stop at in `util`'s build: it is in `util::only_app`, a generic or inlined function whose code only the crates that use it compile, for ",
-     "No current Peeky build of this workspace: util/src/lib.rs changed since `peeky build` ran. Run `peeky build . --config rust.json` again, or add --build",
-     "Peeky builds registry dependencies only from `cargo vendor`'s copy, and /work/ws/vendor doesn't exist (`smallnum 1.0.0` come from crates.io). Run `cd /work/ws &",
-     "`x` cannot be changed at util/src/lib.rs:18, at any stop of this build: in util::kept, a call to `smallnum::keep` (dependency `smallnum`) on line 17 is given a "
+     "lang/rust-cookbook.md",
+     "--help"
     ],
     "doc_bytes": 7196
    },
@@ -26267,12 +26185,7 @@
   "ai_credits": 18.917,
   "unattributed_credits": 3.312,
   "wall_seconds": 165.0,
-  "first_stop": {
-   "n": 9,
-   "seconds": 40.8,
-   "credits": 7.677,
-   "model_calls": 6
-  },
+  "first_stop": null,
   "calls": [
    {
     "n": 1,
@@ -26369,16 +26282,14 @@
    {
     "n": 9,
     "tool": "bash",
-    "category": "stop",
+    "category": "docs",
     "credits": 1.061,
     "seconds": 40.8,
     "output_bytes": 10397,
     "command": "grep -nE '^### A Rust workspace|^### Build it|\"analyse\"|\"sources\"|\"arguments\"' /opt/peeky/docs/lang/rust-cookbook.md; sed -n '755,960p' /opt/peeky/docs/lang/rust-cookbook.md; command -v apply_patch; peeky build --help | head -65",
     "docs": [
-     "lang/rust-cookbook.md"
-    ],
-    "peeky": [
-     "build"
+     "lang/rust-cookbook.md",
+     "--help"
     ],
     "doc_bytes": 10397
    },
@@ -26394,7 +26305,7 @@
    {
     "n": 11,
     "tool": "bash",
-    "category": "stop",
+    "category": "peeky_refused",
     "credits": 0.97,
     "seconds": 52.6,
     "output_bytes": 8052,
@@ -26406,15 +26317,9 @@
      "probe"
     ],
     "codes": [
-     "BUILD_REQUIRED",
-     "INVALID_BREAKPOINT",
-     "INVALID_REQUEST",
-     "MUTATION_REJECTED"
+     "INVALID_REQUEST"
     ],
     "messages": [
-     "Line 208 has no code to stop at in `util`'s build: it is in `util::only_app`, a generic or inlined function whose code only the crates that use it compile, for ",
-     "No current Peeky build of this workspace: util/src/lib.rs changed since `peeky build` ran. Run `peeky build . --config rust.json` again, or add --build",
-     "Peeky builds registry dependencies only from `cargo vendor`'s copy, and /work/ws/vendor doesn't exist (`smallnum 1.0.0` come from crates.io). Run `cd /work/ws &",
      "Peeky stops only in the analysed packages' files (tokio), as their build read them: tokio-util/src/time/delay_queue.rs is none of those. Probe a line there, or "
     ],
     "doc_bytes": 8052
