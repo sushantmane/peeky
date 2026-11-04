@@ -24,7 +24,6 @@ def recount(raw_dir, peeky_sha):
     return sum(
         metrics.peeky_values(entry["output"], entry["command"], peeky_sha)
         for entry in metrics.shell_transcript(raw_dir)
-        if metrics.peeky_subcommands(entry["command"])
     )
 
 

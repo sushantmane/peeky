@@ -3,6 +3,7 @@ session's own events file, usage.json) into the metrics result.json records.
 
 Python 3.9+, standard library only."""
 
+import ast
 import gzip
 import json
 import re
@@ -109,33 +110,39 @@ def invoked_programs(command):
     `python script.py` is script.py. Here-documents' bodies are skipped."""
     found = []
     for segment in COMMAND_SEPARATORS.split(strip_heredocs(command)):
-        words = _words(segment.strip())
-        while words:
-            word = words[0]
-            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", word) or word in COMMAND_PREFIXES:
-                words = words[1:]
-            elif word == "timeout":
-                words = words[1:]
-                while words and (
-                    words[0].startswith("-") or re.fullmatch(r"[\d.]+[smhd]?", words[0])
-                ):
-                    words = words[1:]
-            else:
-                break
-        if words:
-            program = words[0].rsplit("/", 1)[-1]
-            arguments = words[1:]
-            if re.fullmatch(r"python[\d.]*", program):
-                if "-m" in arguments[:-1]:
-                    at = arguments.index("-m")
-                    program, arguments = arguments[at + 1], arguments[at + 2 :]
-                else:
-                    scripts = [i for i, a in enumerate(arguments) if a.endswith(".py")]
-                    if scripts and all(a.startswith("-") for a in arguments[: scripts[0]]):
-                        at = scripts[0]
-                        program, arguments = arguments[at].rsplit("/", 1)[-1], arguments[at + 1 :]
-            found.append((program, arguments))
+        invoked = _program(_words(segment.strip()))
+        if invoked:
+            found.append(invoked)
     return found
+
+
+def _program(words):
+    """(program basename, [arguments]) of one simple command's words, as invoked_programs
+    reads them, or None."""
+    while words:
+        word = words[0]
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", word, re.S) or word in COMMAND_PREFIXES:
+            words = words[1:]
+        elif word == "timeout":
+            words = words[1:]
+            while words and (words[0].startswith("-") or re.fullmatch(r"[\d.]+[smhd]?", words[0])):
+                words = words[1:]
+        else:
+            break
+    if not words:
+        return None
+    program = words[0].rsplit("/", 1)[-1]
+    arguments = words[1:]
+    if re.fullmatch(r"python[\d.]*", program):
+        if "-m" in arguments[:-1]:
+            at = arguments.index("-m")
+            program, arguments = arguments[at + 1], arguments[at + 2 :]
+        else:
+            scripts = [i for i, a in enumerate(arguments) if a.endswith(".py")]
+            if scripts and all(a.startswith("-") for a in arguments[: scripts[0]]):
+                at = scripts[0]
+                program, arguments = arguments[at].rsplit("/", 1)[-1], arguments[at + 1 :]
+    return program, arguments
 
 
 def peeky_subcommands(command):
@@ -369,7 +376,7 @@ def collect(run_dir, language="", test_hint="", arm="", peeky_sha=None):
             subcommands.update(subs)
             for marker in WITHHELD_MARKERS:
                 markers[marker] += entry["output"].count(marker)
-            values_printed += peeky_values(entry["output"], command, peeky_sha)
+        values_printed += peeky_values(entry["output"], command, peeky_sha)
         if "/opt/peeky/docs" in command:
             doc_reads += 1
 
@@ -442,34 +449,257 @@ def collect(run_dir, language="", test_hint="", arm="", peeky_sha=None):
     }
 
 
-# What a Peeky command printed of the program's values: a probe table's rows, a session's
-# `name: type = value` lines, and a JSON answer's "value" fields. An approximate count, for
-# comparing arms; the judge checks the values themselves. A shell command's output also holds
-# what its other programs printed, so only Peeky's own output counts:
+# What Peeky printed of the program's values in a shell command's output: a probe table's rows,
+# a session's `name: type = value` lines, and a JSON answer's "value" fields. An approximate
+# count, for comparing arms; the judge checks the values themselves. It counts in the output of
+# every command that runs Peeky (peeky_runs: directly, or from a script the command runs). That
+# output also holds what the command's other programs printed, so only Peeky's forms count:
 # - nothing, where its Peeky commands only asked for `--help`;
 # - no line of a Peeky doc the command read (`sed -n … /opt/peeky/docs/…`), as printed or as
 #   grep -n, nl or cat -n number it: the cookbooks' example outputs look like Peeky's;
 # - a session's lines only where it ran `peeky session`, and not a file's line grep -n numbered
 #   (`12:    x: int = 5`); JSON's only where Peeky printed JSON (`--json`, or `peeky job`, which
 #   prints a job's recorded JSON).
+# It misses Peeky run from a script file, and output a script kept rather than printed. It
+# still counts a line of the same form that another program printed beside Peeky's, and a row
+# or line whose value Peeky couldn't read (`<no readable value: …>`).
 PROBE_ROW = re.compile(r"^\s*\d+\s+(?:observed|after-set|before-set|set)\s+\d+\s", re.M)
 SESSION_VALUE = re.compile(r"^\s*\S+: [^=\n]{1,120} = \S", re.M)
 JSON_VALUE = re.compile(r'"value":\s')
 DOC_FILE = re.compile(r"/opt/peeky/docs/([\w./-]+?\.md)")
 NUMBERED = re.compile(r"^(?:[^\s:]+[:-])?\d+[:-]|^\s*\d+\t")
+SHELLS = ("sh", "bash", "dash", "zsh", "ksh")
+REDIRECT = re.compile(r"&?(?:<<-|<<<|>>|<<|<>|>&|<&|>\||[<>])-?")
+# A list or tuple of strings that names a Peeky program, in a script that doesn't parse.
+PEEKY_LIST = re.compile(
+    r"[\[(]\s*(['\"])(?:[^'\"\s]*/)?(?:{})\1[^\])]*".format(
+        "|".join(re.escape(p) for p in PEEKY_PROGRAMS)
+    )
+)
+SUBPROCESS_CALLS = {
+    "run",
+    "Popen",
+    "call",
+    "check_call",
+    "check_output",
+    "getoutput",
+    "getstatusoutput",
+    "system",
+    "popen",
+}
+
+
+def shell_commands(text):
+    """Each simple command of shell text, as its words, read as the shell reads quotes and
+    backslashes. `;`, `&`, `|`, a newline, a subshell's `(` and `)`, and `{` or `}` as a word end
+    a command. A command in `$(…)` (in double quotes too), `<(…)`, `>(…)` or backticks is a
+    command of its own, and `_` stands for it in the command around it. A redirection and its target, and a comment, are
+    left out. Here-documents' bodies are read as commands: strip them first (strip_heredocs)."""
+    commands = []
+    state = {"words": [], "word": None, "target": False}
+    # The commands a `(`, `$(`, `<(`, `>(` or backtick interrupted, innermost last.
+    stack = []
+
+    def end_word():
+        word = state["word"]
+        state["word"] = None
+        if word is None:
+            return
+        if state["target"]:
+            state["target"] = False
+        elif word in ("{", "}"):
+            end_command()
+        else:
+            state["words"].append(word)
+
+    def end_command():
+        if state["words"]:
+            commands.append(state["words"])
+        state.update(words=[], target=False)
+
+    def add(characters):
+        state["word"] = (state["word"] or "") + characters
+
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "\\":
+            if text[i + 1 : i + 2] != "\n":
+                add(text[i + 1 : i + 2])
+            i += 2
+        elif ch == "'":
+            end = text.find("'", i + 1)
+            end = n if end < 0 else end
+            add(text[i + 1 : end])
+            i = end + 1
+        elif ch == '"':
+            i, quoted = i + 1, []
+            while i < n and text[i] != '"':
+                if text.startswith("$(", i):
+                    end = _closing(text, i + 2)
+                    commands.extend(shell_commands(text[i + 2 : end]))
+                    quoted.append("_")
+                    i = end + 1
+                elif text[i] == "\\" and text[i + 1 : i + 2] in ('"', "\\", "$", "`", "\n"):
+                    quoted.append(text[i + 1] if text[i + 1] != "\n" else "")
+                    i += 2
+                else:
+                    quoted.append(text[i])
+                    i += 1
+            add("".join(quoted))
+            i += 1
+        elif ch == "#" and state["word"] is None:
+            end = text.find("\n", i)
+            i = n if end < 0 else end
+        elif (
+            text.startswith(("$(", "<(", ">("), i)
+            or ch == "("
+            or (ch == "`" and not (stack and stack[-1][0] == "`"))
+        ):
+            kind = "(" if ch == "(" else "`" if ch == "`" else "$("
+            if kind == "(":
+                end_word()
+                end_command()
+            stack.append((kind, state["words"], state["word"], state["target"]))
+            state.update(words=[], word=None, target=False)
+            i += 1 if kind in ("(", "`") else 2
+        elif (ch == ")" and stack and stack[-1][0] != "`") or (ch == "`" and stack):
+            end_word()
+            end_command()
+            kind, words, word, target = stack.pop()
+            state.update(words=words, word=word, target=target)
+            if kind != "(":
+                add("_")
+            i += 1
+        elif ch in "<>" or (ch == "&" and text[i + 1 : i + 2] == ">"):
+            if state["word"] is not None and state["word"].isdigit():
+                state["word"] = None  # a file descriptor: `2>&1`
+            end_word()
+            operator = REDIRECT.match(text, i).group()
+            i += len(operator)
+            state["target"] = operator.startswith("<<") or not operator.endswith("-")
+        elif ch in ";&|)\n":
+            end_word()
+            end_command()
+            i += 1
+        elif ch in " \t\r":
+            end_word()
+            i += 1
+        else:
+            add(ch)
+            i += 1
+    while True:
+        end_word()
+        end_command()
+        if not stack:
+            return commands
+        _, words, word, target = stack.pop()
+        state.update(words=words, word=word, target=target)
+
+
+def _closing(text, i):
+    """The index of the `)` that closes a `(` just before text[i], or len(text)."""
+    depth, quote = 1, None
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            if ch == quote:
+                quote = None
+            elif ch == "\\" and quote == '"':
+                i += 1
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "\\":
+            i += 1
+        elif ch in "()":
+            depth += 1 if ch == "(" else -1
+            if not depth:
+                return i
+        i += 1
+    return len(text)
+
+
+def peeky_runs(command):
+    """[(subcommand, [arguments])] for each Peeky command a shell command runs that doesn't
+    only ask for `--help`: in the command line, read with its quotes, and in the scripts it
+    runs. Those are a here-document a Python interpreter or a shell reads, `python -c` and
+    `sh -c` code, and in Python, a list naming Peeky (`subprocess.run(['peeky', 'probe', …])`)
+    or a command line given to subprocess or os.system. A script in a file isn't read."""
+    runs = []
+    for words in shell_commands(strip_heredocs(command)):
+        runs += _peeky_in(words)
+    for match in HEREDOC.finditer(command):
+        body = match.group(0).partition("\n")[2].rsplit("\n", 1)[0]
+        # The program the here-document is given to: the last on its line before `<<`.
+        line = command[: match.start()].rsplit("\n", 1)[-1]
+        invoked = [_program(words) for words in shell_commands(line)]
+        program = next((p[0] for p in reversed(invoked) if p), "")
+        if re.fullmatch(r"python[\d.]*", program):
+            runs += python_runs(body)
+        elif program in SHELLS:
+            runs += peeky_runs(body)
+    return runs
+
+
+def _peeky_in(words):
+    """The Peeky commands one simple command runs: itself, or in `sh -c` or `python -c`."""
+    invoked = _program(words)
+    if not invoked:
+        return []
+    program, arguments = invoked
+    if program in PEEKY_PROGRAMS:
+        # Words after `--` are the program's.
+        own = arguments[: arguments.index("--")] if "--" in arguments else arguments
+        if "--help" in own or "-h" in own:
+            return []
+        named = [word for word in own if not word.startswith("-")]
+        return [(named[0] if program == "peeky" and named else program, own)]
+    code = [i + 1 for i, a in enumerate(arguments[:-1]) if a == "-c" or re.fullmatch(r"-\w+c", a)]
+    if code and program in SHELLS:
+        return peeky_runs(arguments[code[0]])
+    if code and re.fullmatch(r"python[\d.]*", program) and arguments[code[0] - 1] == "-c":
+        return python_runs(arguments[code[0]])
+    return []
+
+
+def python_runs(code):
+    """The Peeky commands a Python script runs: each list or tuple naming a Peeky program, and
+    each command line given to subprocess or os.system. Where the script doesn't parse, the
+    lists of strings naming Peeky."""
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError):
+        found = []
+        for match in PEEKY_LIST.finditer(code):
+            words = [a or b for a, b in re.findall(r"'([^']*)'|\"([^\"]*)\"", match.group())]
+            found += _peeky_in(words)
+        return found
+
+    def text(node):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.JoinedStr):
+            return "".join(text(part) if text(part) is not None else "_" for part in node.values)
+        return None
+
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.List, ast.Tuple)) and node.elts:
+            first = text(node.elts[0])
+            if first is not None and first.rsplit("/", 1)[-1] in PEEKY_PROGRAMS:
+                found += _peeky_in([first] + [text(e) or "_" for e in node.elts[1:]])
+        elif isinstance(node, ast.Call) and node.args:
+            name = getattr(node.func, "attr", getattr(node.func, "id", ""))
+            line = text(node.args[0])
+            if name in SUBPROCESS_CALLS and line is not None:
+                for words in shell_commands(line):
+                    found += _peeky_in(words)
+    return found
 
 
 def peeky_values(output, command, peeky_sha=None):
     """The program values the Peeky commands of `command` printed in its `output`."""
-    ran = []
-    for program, arguments in invoked_programs(command):
-        if program not in PEEKY_PROGRAMS:
-            continue
-        # Words after `--` are the program's.
-        own = arguments[: arguments.index("--")] if "--" in arguments else arguments
-        if "--help" not in own and "-h" not in own:
-            words = [word for word in own if not word.startswith("-")]
-            ran.append((words[0] if program == "peeky" and words else program, own))
+    ran = peeky_runs(command)
     if not ran:
         return 0
     shown = without_doc_lines(output, DOC_FILE.findall(command), peeky_sha)

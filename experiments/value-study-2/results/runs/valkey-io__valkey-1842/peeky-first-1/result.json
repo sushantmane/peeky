@@ -216,7 +216,7 @@
  "peeky_mentions_in_commands": 18,
  "peeky_withheld_markers": 0,
  "peeky_withheld_by_marker": {},
- "peeky_values_printed": 0,
+ "peeky_values_printed": 5,
  "contaminated": false,
  "final_message": "`ACL LOAD` dereferenced the primary replication client\u2019s intentionally NULL ACL user. `peeky probe \u2026 --at src/acl.c:2382` showed `original = 0x0000000000000000` at the failing lookup. The fix skips clients without ACL users, preserving replication while reloading ordinary users. Added regression coverage for ACL reload and continued replication.",
  "assistant_messages": [
