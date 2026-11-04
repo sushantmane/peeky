@@ -372,7 +372,7 @@
  "peeky_mentions_in_commands": 10,
  "peeky_withheld_markers": 0,
  "peeky_withheld_by_marker": {},
- "peeky_values_printed": 13,
+ "peeky_values_printed": 9,
  "contaminated": false,
  "final_message": "Added topocentric ITRS support through `get_itrs(..., location=observer)` and direct AltAz/HADec transforms with refraction and epoch adoption, preserving astronomical behavior. The old CIRS route applied unwanted aberration corrections to nearby-object geometry. Peeky showed a 10 km vector becoming 10.02067845 km; the fixed path preserves 10 km, even with `obstime=None`.",
  "assistant_messages": [

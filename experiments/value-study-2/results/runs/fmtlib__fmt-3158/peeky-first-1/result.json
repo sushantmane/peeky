@@ -273,7 +273,7 @@
  "peeky_mentions_in_commands": 31,
  "peeky_withheld_markers": 0,
  "peeky_withheld_by_marker": {},
- "peeky_values_printed": 1,
+ "peeky_values_printed": 0,
  "contaminated": false,
  "final_message": "Nested formatters skipped default debug parsing, losing character quotes, while temporary ranges were forwarded as rvalues to formatters requiring lvalues. Fixed both in `ranges.h`, added regression tests, and updated documentation. Peeky could not inspect the failure: `peeky probe` reported \u201cits line table records no MD5s\u201d and refused to run.",
  "assistant_messages": [

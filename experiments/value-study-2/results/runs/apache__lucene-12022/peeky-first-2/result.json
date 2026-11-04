@@ -332,7 +332,7 @@
  "peeky_mentions_in_commands": 27,
  "peeky_withheld_markers": 0,
  "peeky_withheld_by_marker": {},
- "peeky_values_printed": 68,
+ "peeky_values_printed": 64,
  "contaminated": false,
  "final_message": "Fixed `ShapeField` simplification to combine boundary flags from both non-collapsed edges, rather than retaining an internal edge\u2019s flag. `peeky probe` at `ShapeField.java:388` showed `B=C`, `ab=false`, and `ca=true`; setting `ab=true` changed the false-positive `CONTAINS` count from 1 to 0. Added regression coverage without changing existing tests.",
  "assistant_messages": [

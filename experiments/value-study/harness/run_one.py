@@ -449,7 +449,11 @@ def main():
         if agent_dir is not None:
             shutil.rmtree(str(agent_dir), ignore_errors=True)
         collected = metrics.collect(
-            run_dir, bug["meta"].get("language"), bug["meta"].get("test_hint"), args.arm
+            run_dir,
+            bug["meta"].get("language"),
+            bug["meta"].get("test_hint"),
+            args.arm,
+            result.get("peeky_sha"),
         )
         if collected.get("copilot_version") is None:
             collected["copilot_version"] = result.get("copilot_version")

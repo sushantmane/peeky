@@ -1436,16 +1436,16 @@
    71,
    82
   ],
-  "values_printed": 29,
+  "values_printed": 23,
   "values_printed_per_attempt": {
    "n": 87,
    "median": 0.0,
    "q1": 0.0,
    "q3": 0.0,
-   "mean": 0.3333333333333333,
-   "sd": 2.0891005445577093
+   "mean": 0.26436781609195403,
+   "sd": 1.9968566584261846
   },
-  "attempts_with_values": 3
+  "attempts_with_values": 2
  },
  "judge": {
   "control": {
@@ -1938,16 +1938,16 @@
     71,
     82
    ],
-   "values_printed": 29,
+   "values_printed": 23,
    "values_printed_per_attempt": {
     "n": 87,
     "median": 0.0,
     "q1": 0.0,
     "q3": 0.0,
-    "mean": 0.3333333333333333,
-    "sd": 2.0891005445577093
+    "mean": 0.26436781609195403,
+    "sd": 1.9968566584261846
    },
-   "attempts_with_values": 3
+   "attempts_with_values": 2
   },
   "peeky-first": {
    "peeky_attempts": 87,
@@ -1999,16 +1999,16 @@
     0,
     0
    ],
-   "values_printed": 1059,
+   "values_printed": 1008,
    "values_printed_per_attempt": {
     "n": 87,
     "median": 7.0,
     "q1": 2.0,
-    "q3": 13.0,
-    "mean": 12.172413793103448,
-    "sd": 17.54476460474995
+    "q3": 10.0,
+    "mean": 11.586206896551724,
+    "sd": 15.728474936151985
    },
-   "attempts_with_values": 74
+   "attempts_with_values": 67
   }
  }
 }
