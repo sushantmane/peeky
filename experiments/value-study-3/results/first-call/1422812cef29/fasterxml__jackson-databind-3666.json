@@ -1,0 +1,76 @@
+{
+ "bug": "fasterxml__jackson-databind-3666",
+ "language": "java",
+ "image": "peeky-study/fasterxml__jackson-databind-3666:peeky-r3",
+ "image_id": "sha256:3c304f4cc72205ca7a46f35c425c027fc1355f0165a49f37884fa52d4d1c8736",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:01:52+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "first code hunk: the changed nextToken() read in _deserializeFromArray",
+   "at": "src/main/java/com/fasterxml/jackson/databind/deser/BeanDeserializer.java:619",
+   "test_command": "mvn test -B -o '-Dtest=com.fasterxml.jackson.databind.deser.creators.EnumCreatorTest#testEnumsFromStringUnwrapped'",
+   "captures": [],
+   "command": "peeky probe . --at src/main/java/com/fasterxml/jackson/databind/deser/BeanDeserializer.java:619 --timeout 300 --json --test -- mvn test -B -o '-Dtest=com.fasterxml.jackson.databind.deser.creators.EnumCreatorTest#testEnumsFromStringUnwrapped'",
+   "exit": 1,
+   "seconds": 8.0,
+   "outcome": "no stop",
+   "detail": {
+    "code": "NO_STOP",
+    "message": "The program finished without stopping at src/main/java/com/fasterxml/jackson/databind/deser/BeanDeserializer.java:619; check `peeky describe` for executable lines",
+    "hint": "Pick a line the program executes; see `peeky describe`."
+   },
+   "stderr_tail": "peeky: test: mvn test -B -o '-Dtest=com.fasterxml.jackson.databind.deser.creators.EnumCreatorTest#testEnumsFromStringUnwrapped'\npeeky: started maven; its output goes to /root/.peeky/tests/java-test-fa50a25d8f8e.log\npeeky: the test JVM (pid 88) waits on port 40583; attaching\npeeky: started; breakpoint src/main/java/com/fasterxml/jackson/databind/deser/BeanDeserializer.java:619 pending until its class or module loads\npeeky: waiting for the program to reach it...\npeeky: program finished after 0 hit(s)\n",
+   "leftover_processes": 0
+  },
+  {
+   "why": "last code hunk: an insertion at the end of the _hasArgs branch of deserialize; the statement that runs just after it is the creator call _factory.callOnWith (the next line in the text, p.skipChildren(), is in the other branch)",
+   "at": "src/main/java/com/fasterxml/jackson/databind/deser/std/FactoryBasedEnumDeserializer.java:171",
+   "test_command": "mvn test -B -o '-Dtest=com.fasterxml.jackson.databind.deser.creators.EnumCreatorTest#testEnumsFromStringUnwrapped'",
+   "captures": [
+    "p",
+    "ctxt",
+    "value",
+    "this"
+   ],
+   "command": "peeky probe . --at src/main/java/com/fasterxml/jackson/databind/deser/std/FactoryBasedEnumDeserializer.java:171 --capture p,ctxt,value,this --timeout 300 --json --test -- mvn test -B -o '-Dtest=com.fasterxml.jackson.databind.deser.creators.EnumCreatorTest#testEnumsFromStringUnwrapped'",
+   "exit": 0,
+   "seconds": 9.4,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "hits",
+    "hits": 1,
+    "exit_code": null,
+    "seconds": 0.726,
+    "warnings": []
+   },
+   "values": {
+    "read": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "p",
+      "value": "ReaderBasedJsonParser@872"
+     },
+     {
+      "selector": "ctxt",
+      "value": "DefaultDeserializationContext$Impl@873"
+     },
+     {
+      "selector": "value",
+      "value": "\"\""
+     },
+     {
+      "selector": "this",
+      "value": "FactoryBasedEnumDeserializer@875"
+     }
+    ]
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:02:10+00:00"
+}

@@ -1,0 +1,51 @@
+{
+ "bug": "matplotlib__matplotlib-23299",
+ "language": "python",
+ "image": "peeky-study/matplotlib__matplotlib-23299:peeky-r3",
+ "image_id": "sha256:691783d31dbd829a253419aef7516beeb74bdeecf40cfb8f2b9a429357e57943",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:52:57+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the first line the only code hunk changes, in rc_context (orig = rcParams.copy())",
+   "at": "lib/matplotlib/__init__.py:1090",
+   "test_command": "python -m pytest -q -p no:cacheprovider lib/matplotlib/tests/test_rcparams.py::test_no_backend_reset_rccontext",
+   "captures": [
+    "fname",
+    "rc"
+   ],
+   "command": "peeky probe . --at lib/matplotlib/__init__.py:1090 --capture fname,rc --timeout 300 --json --test -- python -m pytest -q -p no:cacheprovider lib/matplotlib/tests/test_rcparams.py::test_no_backend_reset_rccontext",
+   "exit": 0,
+   "seconds": 2.7,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "exit",
+    "hits": 1,
+    "exit_code": 1,
+    "seconds": 2.55,
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "values": {
+    "read": 2,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "fname",
+      "value": "None"
+     },
+     {
+      "selector": "rc",
+      "value": "None"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:53:00+00:00"
+}

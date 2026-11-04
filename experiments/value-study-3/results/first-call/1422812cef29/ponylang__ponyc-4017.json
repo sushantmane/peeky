@@ -1,0 +1,73 @@
+{
+ "bug": "ponylang__ponyc-4017",
+ "language": "c",
+ "image": "peeky-study/ponylang__ponyc-4017:peeky-r3",
+ "image_id": "sha256:770c404b0eeb1223dadc62c396734788f45b5b351d7aaa566df7361ef49d37d6",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:22:42+00:00",
+ "prepare": [
+  {
+   "command": "cmake --build build-peeky/cmake --parallel 4 --target libponyc.tests > /root/reach/rebuild.log 2>&1; tail -3 /root/reach/rebuild.log",
+   "exit": 0,
+   "seconds": 1.5,
+   "output": "[ 76%] Building CXX object test/libponyc/CMakeFiles/libponyc.tests.dir/flatten.cc.o\n[ 76%] Linking CXX executable /testbed/build-peeky/debug/libponyc.tests\n[100%] Built target libponyc.tests\n"
+  }
+ ],
+ "points": [
+  {
+   "why": "the fix's only hunk that changes a statement (it also adds the function constraint_contains_tuple): the changed condition of flatten_typeparamref's tuple check",
+   "at": "src/libponyc/pass/flatten.c:83",
+   "test_command": "build-peeky/debug/libponyc.tests --gtest_filter=FlattenTest.TupleConstraintInUnion",
+   "captures": [
+    "opt",
+    "ast",
+    "cap_ast",
+    "cap"
+   ],
+   "command": "peeky probe . --at src/libponyc/pass/flatten.c:83 --capture opt,ast,cap_ast,cap --timeout 300 --json --test -- build-peeky/debug/libponyc.tests --gtest_filter=FlattenTest.TupleConstraintInUnion",
+   "exit": 1,
+   "seconds": 14.7,
+   "outcome": "read",
+   "detail": {
+    "status": "failed",
+    "ended": null,
+    "hits": 1,
+    "exit_code": null,
+    "seconds": 14.482,
+    "warnings": [
+     "The probe let the program go on after it stopped on signal SIGABRT, which Peeky doesn't take for a crash. The debugger may not deliver a signal to the program, so its run after that stop can differ from one without Peeky.",
+     "Peeky runs build-peeky/debug/libponyc.tests in an environment of its own: of yours it passes only PATH, TMPDIR, TMP, TEMP, LANG and LC_ALL, and HOME is a directory of Peeky's. A test that reads another of your variables, or HOME, may run otherwise"
+    ],
+    "error": {
+     "code": "PROGRAM_CRASHED",
+     "message": "The program crashed after hit 1: signal SIGABRT, outside the program's sources, in a call from ponyint_assert_fail at src/libponyrt/platform/ponyassert.c:65. Peeky ended it there, so it has no exit status"
+    }
+   },
+   "values": {
+    "read": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "opt",
+      "value": "0x0000aaaaae07ca50"
+     },
+     {
+      "selector": "ast",
+      "value": "0x0000fffff7bacac0"
+     },
+     {
+      "selector": "cap_ast",
+      "value": "0x0000fffff7bac540"
+     },
+     {
+      "selector": "cap",
+      "value": "TK_NONE"
+     }
+    ]
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:22:59+00:00"
+}

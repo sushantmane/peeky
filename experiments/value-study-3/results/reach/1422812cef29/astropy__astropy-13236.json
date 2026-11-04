@@ -1,0 +1,136 @@
+{
+ "bug": "astropy__astropy-13236",
+ "language": "python",
+ "category": "E",
+ "image": "peeky-study/astropy__astropy-13236:peeky-r3",
+ "image_id": "sha256:a94a2817f62b6c71aa68ed0002008622769b5556dbdd7b37c5e38e182c046f92",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:49:21+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the removed structured-ndarray check in Table._convert_data_to_col (the only hunk; its first removed lines are comments)",
+   "at": "astropy/table/table.py:1244",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at astropy/table/table.py:1244 --name reach --timeout 300 --json -- -q -p no:cacheprovider 'astropy/table/tests/test_mixin.py::test_ndarray_mixin[False]'",
+     "exit": 0,
+     "seconds": 1.4
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/astropy/table/table.py:1244",
+    "function": "_convert_data_to_col",
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 9,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "copy",
+      "value": "True"
+     },
+     {
+      "name": "data",
+      "value": "('Table', 'Table', 'Table', 'Table', 'Table', 'Table', 'Table', 'Table', 'Table', 'Table', 'Table', 'Table', 'Table', 'Table', 'Table', 'Table', 'Table', 'Table"
+     },
+     {
+      "name": "data0_is_mixin",
+      "value": "False"
+     },
+     {
+      "name": "data_is_mixin",
+      "value": "False"
+     },
+     {
+      "name": "default_name",
+      "value": "'col0'"
+     },
+     {
+      "name": "dtype",
+      "value": "None"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "astropy/table/tests/test_mixin.py:731",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at astropy/table/tests/test_mixin.py:731 --name reach --timeout 300 --json -- -q -p no:cacheprovider 'astropy/table/tests/test_mixin.py::test_ndarray_mixin[False]'",
+     "exit": 0,
+     "seconds": 1.4
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/astropy/table/tests/test_mixin.py:731",
+    "function": "test_ndarray_mixin",
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 6,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "a",
+      "value": "array([(1, 'a'), (2, 'b'), (3, 'c'), (4, 'd')],\n      dtype=[('f0', '<i4'), ('f1', '<U1')])"
+     },
+     {
+      "name": "as_ndarray_mixin",
+      "value": "False"
+     },
+     {
+      "name": "b",
+      "value": "array([(10, 'aa'), (20, 'bb'), (30, 'cc'), (40, 'dd')],\n      dtype=[('x', '<i4'), ('y', '<U2')])"
+     },
+     {
+      "name": "c",
+      "value": "rec.array([(100., 'raa'), (200., 'rbb'), (300., 'rcc'), (400., 'rdd')],\n          dtype=[('rx', '<f8'), ('ry', '<U3')])"
+     },
+     {
+      "name": "d",
+      "value": "array([[0, 1],\n       [2, 3],\n       [4, 5],\n       [6, 7]])"
+     },
+     {
+      "name": "t",
+      "value": "<Table length=4>\n  a [f0, f1]     b [x, y]      c [rx, ry]      d    \n(int32, str1) (int32, str2) (float64, str3) int64[2]\n------------- ------------- ---------"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 4
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:49:24+00:00"
+}

@@ -1,0 +1,204 @@
+{
+ "bug": "facebook__zstd-2130",
+ "language": "c",
+ "category": "D",
+ "image": "peeky-study/facebook__zstd-2130:peeky-r3",
+ "image_id": "sha256:f1f672c20a47597b5c0ce9aaa0d4f48964f285afd28774adf21d08ea85252447",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:20:41+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [
+  {
+   "command": "CFLAGS=-O0 LDFLAGS=-Wl,--build-id=sha1 make -C tests fuzzer CC=clang-18 MOREFLAGS='-g -gdwarf-5 -grecord-command-line -fdebug-macro' > /root/reach/rebuild.log 2>&1; tail -3 /root/reach/rebuild.log",
+   "exit": 0,
+   "seconds": 0.6,
+   "output": "make: Entering directory '/testbed/tests'\nclang-18 -I../lib -I../lib/common -I../lib/compress -I../lib/dictBuilder -I../lib/deprecated -I../programs -DZSTD_MULTITHREAD -O0 -Wall -Wextra -Wcast-qual -Wcast-align -Wshadow -Wstrict-aliasing=1 -Wswitch-enum -Wdeclaration-after-statement -Wstrict-prototypes -Wundef -Wvla -Wformat=2 -Winit-self -Wfloat-equal -Wwrite-strings -Wredundant-decls -Wmissing-prototypes -g -DDEBUGLEVEL=1 -g -gdwarf-5 -grecord-command-line -fdebug-macro -Wl,--build-id=sha1 -pthread ../lib/dictBuilder/cover.c ../lib/dictBuilder/divsufsort.c ../lib/dictBuilder/fastcover.c ../lib/dictBuilder/zdict.c ../programs/util.c ../programs/timefn.c ../programs/datagen.c fuzzer.c zstdmt_d_huf_decompress.o zstdmt_d_zstd_ddict.o zstdmt_d_zstd_decompress.o zstdmt_d_zstd_decompress_block.o zstdmt_m_debug.o zstdmt_m_entropy_common.o zstdmt_m_error_private.o zstdmt_m_fse_decompress.o zstdmt_m_pool.o zstdmt_m_threading.o zstdmt_m_xxhash.o zstdmt_m_zstd_common.o zstdmt_c_fse_compress.o zstdmt_c_hist.o zstdmt_c_huf_compress.o zstdmt_c_zstd_compress.o zstdmt_c_zstd_compress_literals.o zstdmt_c_zstd_compress_sequences.o zstdmt_c_zstd_compress_superblock.o zstdmt_c_zstd_double_fast.o zstdmt_c_zstd_fast.o zstdmt_c_zstd_lazy.o zstdmt_c_zstd_ldm.o zstdmt_c_zstd_opt.o zstdmt_c_zstdmt_compress.o -o fuzzer\nmake: Leaving directory '/testbed/tests'\n"
+  }
+ ],
+ "points": [
+  {
+   "role": "gold",
+   "why": "first hunk that changes a statement: the removed `if (cctx == NULL) {` block of ZSTD_initStaticCCtx, rewritten as one line (the hunks before it change a comment and a signature)",
+   "at": "lib/compress/zstd_compress.c:102",
+   "commands": [
+    {
+     "command": "peeky session start . --binary tests/fuzzer --at lib/compress/zstd_compress.c:102 --name reach --timeout 300 --json -- -v -T1mn",
+     "exit": 0,
+     "seconds": 5.5
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.3
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/lib/compress/zstd_compress.c:102",
+    "function": "ZSTD_initStaticCCtx"
+   },
+   "moved": false,
+   "values": {
+    "shown": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "workspace",
+      "value": "0x0000aaaaaac186a0"
+     },
+     {
+      "name": "workspaceSize",
+      "value": "532872"
+     },
+     {
+      "name": "ws",
+      "value": "{workspace = 0x0000aaaaaac186a0, workspaceEnd = 0x0000aaaaaac9a828, objectEnd = 0x0000aaaaaac18b28, tableEnd = 0x0000aaaaaac18b28, tableValidEnd = 0x0000aaaaaac"
+     },
+     {
+      "name": "cctx",
+      "value": "0x0000aaaaaac186a0"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 1
+  },
+  {
+   "role": "gold",
+   "why": "last hunk that changes a statement: the call ZSTD_cwksp_bump_oversized_duration(ws, 0) in ZSTD_resetCCtx_internal, which the fix makes conditional (the hunk after it only removes trailing whitespace in ZSTD_copyCCtx_internal, and the other files' hunks are comments)",
+   "at": "lib/compress/zstd_compress.c:1461",
+   "commands": [
+    {
+     "command": "peeky session start . --binary tests/fuzzer --at lib/compress/zstd_compress.c:1461 --name reach --timeout 300 --json -- -v -T1mn",
+     "exit": 0,
+     "seconds": 3.0
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 1.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/lib/compress/zstd_compress.c:1461",
+    "function": "ZSTD_resetCCtx_internal"
+   },
+   "moved": false,
+   "values": {
+    "shown": 16,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "zc",
+      "value": "0x0000aaaaaabf12a0"
+     },
+     {
+      "name": "params",
+      "value": "{format = ZSTD_f_zstd1, cParams = {windowLog = 19, chainLog = 13, hashLog = 14, searchLog = 1, minMatch = 7, targetLength = 0, strategy = ZSTD_fast}, fParams = "
+     },
+     {
+      "name": "pledgedSrcSize",
+      "value": "5242880"
+     },
+     {
+      "name": "crp",
+      "value": "ZSTDcrp_makeClean"
+     },
+     {
+      "name": "zbuff",
+      "value": "ZSTDb_not_buffered"
+     },
+     {
+      "name": "ws",
+      "value": "0x0000aaaaaabf13d8"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "assertion",
+   "why": "\"all tests\" first fails in test-fuzzer (the test patch's checks are in fuzzer.c; test-zstd and test-fullbench run before it and pass); the fuzzer program's first check, in basicUnitTests, which main runs first",
+   "at": "tests/fuzzer.c:347",
+   "commands": [
+    {
+     "command": "peeky session start . --binary tests/fuzzer --at tests/fuzzer.c:347 --name reach --timeout 300 --json -- -v -T1mn",
+     "exit": 0,
+     "seconds": 2.8
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/tests/fuzzer.c:347",
+    "function": "basicUnitTests"
+   },
+   "moved": false,
+   "values": {
+    "shown": 0,
+    "withheld": 10,
+    "sample": [],
+    "withheld_sample": [
+     {
+      "name": "seed",
+      "value": "None",
+      "unavailable": "True",
+      "withheld": "True",
+      "reason": "a block around line 347 may declare `seed` (a `static`, an `extern`, an enumerator, a function or a type), which the code would name instead of this local: Peeky could not preprocess the source to read it (Peeky can't read tests/fuzzer.c as compiled: its command uses -dumpdir, which Peeky doesn't pa"
+     },
+     {
+      "name": "compressibility",
+      "value": "None",
+      "unavailable": "True",
+      "withheld": "True",
+      "reason": "a block around line 347 may declare `compressibility` (a `static`, an `extern`, an enumerator, a function or a type), which the code would name instead of this local: Peeky could not preprocess the source to read it (Peeky can't read tests/fuzzer.c as compiled: its command uses -dumpdir, which Peeky"
+     },
+     {
+      "name": "CNBuffSize",
+      "value": "None",
+      "unavailable": "True",
+      "withheld": "True",
+      "reason": "a block around line 347 may declare `CNBuffSize` (a `static`, an `extern`, an enumerator, a function or a type), which the code would name instead of this local: Peeky could not preprocess the source to read it (Peeky can't read tests/fuzzer.c as compiled: its command uses -dumpdir, which Peeky does"
+     },
+     {
+      "name": "CNBuffer",
+      "value": "None",
+      "unavailable": "True",
+      "withheld": "True",
+      "reason": "a block around line 347 may declare `CNBuffer` (a `static`, an `extern`, an enumerator, a function or a type), which the code would name instead of this local: Peeky could not preprocess the source to read it (Peeky can't read tests/fuzzer.c as compiled: its command uses -dumpdir, which Peeky doesn'"
+     },
+     {
+      "name": "compressedBufferSize",
+      "value": "None",
+      "unavailable": "True",
+      "withheld": "True",
+      "reason": "a block around line 347 may declare `compressedBufferSize` (a `static`, an `extern`, an enumerator, a function or a type), which the code would name instead of this local: Peeky could not preprocess the source to read it (Peeky can't read tests/fuzzer.c as compiled: its command uses -dumpdir, which "
+     },
+     {
+      "name": "compressedBuffer",
+      "value": "None",
+      "unavailable": "True",
+      "withheld": "True",
+      "reason": "a block around line 347 may declare `compressedBuffer` (a `static`, an `extern`, an enumerator, a function or a type), which the code would name instead of this local: Peeky could not preprocess the source to read it (Peeky can't read tests/fuzzer.c as compiled: its command uses -dumpdir, which Peek"
+     }
+    ]
+   },
+   "leftover_processes": 4
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:20:56+00:00"
+}

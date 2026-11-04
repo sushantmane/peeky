@@ -1,0 +1,42 @@
+{
+ "bug": "sympy__sympy-21596",
+ "language": "python",
+ "image": "peeky-study/sympy__sympy-21596:peeky-r3",
+ "image_id": "sha256:4f3164ee43522fca1ee883756e2b13d2e1bf6158739a9ef0af7cc9b823fb7ee1",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:53:50+00:00",
+ "prepare": [
+  {
+   "command": "cp bin/test bin/reach_test.py && ls -l bin/reach_test.py",
+   "exit": 0,
+   "seconds": 0.0,
+   "output": "-rwxr-xr-x 1 root root 3991 Nov  4 07:53 bin/reach_test.py\n"
+  }
+ ],
+ "points": [
+  {
+   "why": "the removed solve_linear of the imaginary part in intersection_sets(ImageSet, Set)'s Reals branch, the first executable line the only code-changing hunk removes (the line before it is a comment)",
+   "at": "sympy/sets/handlers/intersection.py:307",
+   "test_command": "python bin/test -C --verbose --no-subprocess sympy/sets/tests/test_fancysets.py -k test_imageset_intersect_real",
+   "captures": [
+    "base_set",
+    "f",
+    "f_",
+    "gm"
+   ],
+   "command": "peeky probe . --at sympy/sets/handlers/intersection.py:307 --capture base_set,f,f_,gm --timeout 300 --json --test -- python bin/test -C --verbose --no-subprocess sympy/sets/tests/test_fancysets.py -k test_imageset_intersect_real",
+   "exit": 2,
+   "seconds": 0.1,
+   "outcome": "refused",
+   "detail": {
+    "code": "INVALID_REQUEST",
+    "message": "entry must be a .py file inside the root",
+    "hint": "Fix the request arguments; see `peeky <command> --help`."
+   },
+   "stderr_tail": "peeky: test: python bin/test -C --verbose --no-subprocess sympy/sets/tests/test_fancysets.py -k test_imageset_intersect_real\n",
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:53:50+00:00"
+}

@@ -1,0 +1,143 @@
+{
+ "bug": "BurntSushi__ripgrep-2295",
+ "language": "rust",
+ "category": "D",
+ "image": "peeky-study/burntsushi__ripgrep-2295:peeky-r3",
+ "image_id": "sha256:10764d0fdaaf75df5ea564adaa0512dd683e8bd011be3fc00a7e0f1e199a6480",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:28:32+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed `if self.0.opts.parents` in Ignore::matched_ignore (the only code hunk); the test's files are under /root/reach/rg, so the searched directory is given by its absolute path",
+   "at": "crates/ignore/src/dir.rs:443",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/bin.json --build --at crates/ignore/src/dir.rs:443 --name reach --timeout 300 --json -- --files-with-matches needle /root/reach/rg/rust",
+     "exit": 0,
+     "seconds": 15.2
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 3.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/crates/ignore/src/dir.rs:443",
+    "function": "ignore::dir::Ignore::matched_ignore::h03bc1bf3935adfb9"
+   },
+   "moved": false,
+   "values": {
+    "shown": 5,
+    "withheld": 5,
+    "sample": [
+     {
+      "name": "self",
+      "value": "0x0000fffff7dbdf08"
+     },
+     {
+      "name": "path",
+      "value": "&std::path::Path @ 0xfffff7dbc020"
+     },
+     {
+      "name": "is_dir",
+      "value": "false"
+     },
+     {
+      "name": "any_git",
+      "value": "false"
+     },
+     {
+      "name": "saw_git",
+      "value": "false"
+     }
+    ],
+    "withheld_sample": [
+     {
+      "name": "m_custom_ignore",
+      "value": "<unqualified Rust enum layout>"
+     },
+     {
+      "name": "m_ignore",
+      "value": "<unqualified Rust enum layout>"
+     },
+     {
+      "name": "m_gi",
+      "value": "<unqualified Rust enum layout>"
+     },
+     {
+      "name": "m_gi_exclude",
+      "value": "<unqualified Rust enum layout>"
+     },
+     {
+      "name": "m_explicit",
+      "value": "<unqualified Rust enum layout>"
+     }
+    ]
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "tests/regression.rs:963",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tests/regression.rs:963 --name reach --timeout 300 --json -- --exact regression::f1757 --test-threads=1",
+     "exit": 0,
+     "seconds": 17.3
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 4.8
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/tests/regression.rs:963",
+    "function": "integration::regression::f1757::_$u7b$$u7b$closure$u7d$$u7d$::h3220c932437e191e"
+   },
+   "moved": false,
+   "values": {
+    "shown": 5,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "<null> @ regression.rs:956",
+      "value": "0x0000000000000001"
+     },
+     {
+      "name": "dir",
+      "value": "integration::util::Dir @ 0xfffff7dbdca8"
+     },
+     {
+      "name": "<null> @ regression.rs:956",
+      "value": "integration::util::TestCommand @ 0xfffff7dbdce0"
+     },
+     {
+      "name": "args",
+      "value": "0x0000aaaaaaca6900"
+     },
+     {
+      "name": "expected",
+      "value": "<not shown: may point at freed memory>"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 3
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:29:14+00:00"
+}

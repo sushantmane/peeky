@@ -1,0 +1,56 @@
+{
+ "bug": "clap-rs__clap-2085",
+ "language": "rust",
+ "category": "E",
+ "image": "peeky-study/clap-rs__clap-2085:peeky-r3",
+ "image_id": "sha256:78d816404e4452631a240f5f9eac08bed1587e1bb4e52e0af7e5609989731ac9",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T09:01:00+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed `if arg.has_switch()` in Help::val, where the fix skips the alignment padding for long help (the only hunk, so the first and last gold point are one)",
+   "at": "src/output/help.rs:356",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at src/output/help.rs:356 --name reach --timeout 300 --json -- --exact after_and_before_long_help_output --test-threads=1",
+     "exit": 2,
+     "seconds": 1.6
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "BUILD_FAILED",
+    "message": "The build failed: cargo exited with code 101\nerror: specification `clap` is ambiguous\nhelp: re-run this command with one of the following specifications\n  clap@2.34.0\n  clap@3.0.0-beta.1",
+    "hint": "Fix the error the compiler reports and run again. With --old/--new it is the edit that does not build; your files were not changed.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "tests/help.rs:781",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tests/help.rs:781 --name reach --timeout 300 --json -- --exact after_and_before_long_help_output --test-threads=1",
+     "exit": 2,
+     "seconds": 1.0
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "BUILD_FAILED",
+    "message": "The build failed: cargo exited with code 101\nerror: specification `clap` is ambiguous\nhelp: re-run this command with one of the following specifications\n  clap@2.34.0\n  clap@3.0.0-beta.1",
+    "hint": "Fix the error the compiler reports and run again. With --old/--new it is the edit that does not build; your files were not changed.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T09:01:03+00:00"
+}

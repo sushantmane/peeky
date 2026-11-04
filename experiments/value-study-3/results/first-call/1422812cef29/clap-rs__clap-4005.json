@@ -1,0 +1,63 @@
+{
+ "bug": "clap-rs__clap-4005",
+ "language": "rust",
+ "image": "peeky-study/clap-rs__clap-4005:peeky-r3",
+ "image_id": "sha256:66c9defc9f75c560f883773db023df54c0d78a1e248ab81476c3261c11fbca2d",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:31:27+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the removed args_in_groups binding in Usage::get_required_usage_from (the only hunk)",
+   "at": "src/output/usage.rs:382",
+   "test_command": "cargo test -p clap --test builder require::required_require_with_group_shows_flag -- --exact --test-threads=1",
+   "captures": [
+    "self",
+    "incls",
+    "incl_last",
+    "ret_val"
+   ],
+   "command": "peeky probe . --at src/output/usage.rs:382 --capture self,incls,incl_last,ret_val --timeout 300 --json --test -- cargo test -p clap --test builder require::required_require_with_group_shows_flag -- --exact --test-threads=1",
+   "exit": 0,
+   "seconds": 33.3,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "exit",
+    "hits": 1,
+    "exit_code": 101,
+    "seconds": 18.42,
+    "warnings": [
+     "incls: This Rust &[clap::util::id::Id] shows LLDB's summary (its type and address), not its contents: the crate enables nightly features (in src/lib.rs), which can free a buffer without Peeky seeing it. Capture incls.length for the length, and check contents with `peeky verify`.",
+     "Peeky builds the test with Cargo, and runs its executable itself, in environments of its own: Cargo and build scripts get none of your variables, and the test only PATH (the toolchain's directory, /usr/bin and /bin), LC_ALL=C, a HOME of Peeky's, CARGO_MANIFEST_DIR and, in an integration test, CARGO_BIN_EXE_<name>. `cargo test` would pass on your environment, and more CARGO_* variables: a test or build script that reads one may run otherwise"
+    ]
+   },
+   "values": {
+    "read": 3,
+    "withheld": 1,
+    "sample": [
+     {
+      "selector": "self",
+      "value": "0x0000fffff7db4fc0"
+     },
+     {
+      "selector": "incls",
+      "value": "&[clap::util::id::Id] @ 0xfffff7db4eb8",
+      "note": "This Rust &[clap::util::id::Id] shows LLDB's summary (its type and address), not its contents: the crate enables nightly features (in src/lib.rs), which can free a buffer without Peeky seeing it. Capture incls.length for the length, and check contents with `peeky verify`."
+     },
+     {
+      "selector": "incl_last",
+      "value": "true"
+     },
+     {
+      "selector": "ret_val",
+      "value": "indexmap::set::IndexSet<alloc::string::String, std::hash::random::RandomState> @ 0xfffff7db47b0"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:32:01+00:00"
+}

@@ -1,0 +1,68 @@
+{
+ "bug": "matplotlib__matplotlib-26208",
+ "language": "python",
+ "image": "peeky-study/matplotlib__matplotlib-26208:peeky-r3",
+ "image_id": "sha256:41637f5406d466ce9e9ba408239a0cdd227ddf4ca088156229dab90423665ef7",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:53:10+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the statement after the insertion in _AxesBase.twinx (first code hunk)",
+   "at": "lib/matplotlib/axes/_base.py:4444",
+   "test_command": "python -m pytest -q -p no:cacheprovider 'lib/matplotlib/tests/test_axes.py::test_twin_units[x]'",
+   "captures": [
+    "ax2",
+    "self"
+   ],
+   "command": "peeky probe . --at lib/matplotlib/axes/_base.py:4444 --capture ax2,self --timeout 300 --json --test -- python -m pytest -q -p no:cacheprovider 'lib/matplotlib/tests/test_axes.py::test_twin_units[x]'",
+   "exit": 0,
+   "seconds": 2.7,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "exit",
+    "hits": 1,
+    "exit_code": 1,
+    "seconds": 2.537,
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "values": {
+    "read": 2,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "ax2",
+      "value": "<Axes: >"
+     },
+     {
+      "selector": "self",
+      "value": "<Axes: >"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  },
+  {
+   "why": "the statement after the insertion in _AxesBase.twiny (last code hunk)",
+   "at": "lib/matplotlib/axes/_base.py:4473",
+   "test_command": "python -m pytest -q -p no:cacheprovider 'lib/matplotlib/tests/test_axes.py::test_twin_units[x]'",
+   "captures": [],
+   "command": "peeky probe . --at lib/matplotlib/axes/_base.py:4473 --timeout 300 --json --test -- python -m pytest -q -p no:cacheprovider 'lib/matplotlib/tests/test_axes.py::test_twin_units[x]'",
+   "exit": 1,
+   "seconds": 2.4,
+   "outcome": "no stop",
+   "detail": {
+    "code": "NO_STOP",
+    "message": "The program failed (exit code 1) without stopping at lib/matplotlib/axes/_base.py:4473; its output says why",
+    "hint": "The program failed before it reached the line: read its output, and check its arguments (everything after `--`) and input."
+   },
+   "stderr_tail": "peeky: test: python -m pytest -q -p no:cacheprovider 'lib/matplotlib/tests/test_axes.py::test_twin_units[x]'\npeeky: started; breakpoint lib/matplotlib/axes/_base.py:4473 verified\npeeky: waiting for the program to reach it...\npeeky: program finished after 0 hit(s)\n",
+   "leftover_processes": 2
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:53:15+00:00"
+}

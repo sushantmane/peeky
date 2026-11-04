@@ -26,6 +26,10 @@ launcher from the project's test command, and a short first-probe doc), once it 
 filter's first pass used `3e51ccd7`, the `main` of 2 November. The reach check runs again on the
 final commit before screening, and that run decides.
 
+**Recorded, 4 November:** the final commit is `1422812c`, the `main` of 3 November, with ADR 0009
+(`--test`, #492 and #493, and `docs/FIRST.md`, #494). The deciding run is in
+[FILTER.md](FILTER.md#the-deciding-run-on-1422812c).
+
 ## Selection
 
 [select_candidates.py](select_candidates.py) fixes the order, with seed 20261102. The lists are in
@@ -98,9 +102,14 @@ Rules for the reach check, beyond round 2's:
 - **The deciding run** is on the final Peeky commit, before screening, for every candidate that
   passed steps 1 and 2. A candidate reached only on `3e51ccd7` is dropped; one reached only on the
   final commit survives.
+- **One `--test` call** (added on 4 November, before screening, once ADR 0009 merged; it decides
+  nothing). In the deciding run, each survivor's gold points also get one `peeky probe … --test
+  -- <test command>`, with no retry. The test command is the gold point's run, written as
+  docs/FIRST.md writes test commands ([harness/first_call.py](harness/first_call.py)). It shows
+  how often an agent's first question, as FIRST.md asks it, reaches the fix's code.
 
 [FILTER.md](FILTER.md) has the results of the first pass, and the rulings made after it, before
-any agent run.
+any agent run, and the deciding run's.
 
 **Refill.** Screening keeps perhaps a third of the survivors (below), and the main run needs at
 least 15 bugs. So if fewer than 50 candidates survive on the final commit, reserves are examined
@@ -163,6 +172,16 @@ attempts are fresh (see [Threats](#threats-from-selecting-on-control-failure)).
   word for word, with one possible change. If ADR 0009 adds a short first-probe doc, the sentence
   "Start with `/opt/peeky/docs/AGENT_GUIDE.md`" names that doc instead. This is fixed before
   screening, and recorded here.
+  - **Recorded, 4 November, before screening.** ADR 0009 added a first-probe doc,
+    `docs/FIRST.md`. So `peeky-first` adds [prompts/prompt-peeky-first.md](prompts/prompt-peeky-first.md):
+    round 2's file with that one sentence changed, to "Start with `/opt/peeky/docs/FIRST.md`."
+    Nothing else in it changed. Its SHA-256 is
+    `882c57e18e80a554bcb51b04e537adc51a1e08f86da867956dbe1313b2f0d3b9` (round 2's:
+    `03b9d6586a5afb115e624e1ecbf8c7631937e73322f0dc92957644deaa57d6e1`).
+    [study.json](study.json) names it.
+  - The images' docs hold FIRST.md beside the guide. Round 2's image pointed to PROJECT.md in
+    one line under the guide's title. The image now does the same in FIRST.md, so the doc the
+    prompt names still points to PROJECT.md.
 - **Attempts:** k fresh attempts per bug in each arm, with k = 160 / bugs rounded up, at least 6
   and at most 11. So 12 to 15 bugs get 11, 20 get 8, 25 get 7, and 30 get 6.
 - **Order:** all attempts shuffled with seed 20261102, at most 3 at once.
@@ -187,6 +206,12 @@ attempts are fresh (see [Threats](#threats-from-selecting-on-control-failure)).
 - **Better measures.** Round 2 asked to count Peeky runs inside scripts, and to take values from
   Peeky's own records. If that lands in the harness before screening, both are used, and listed.
   They don't change the primary outcome.
+  - **Recorded, before screening.** Part of it landed with #507. metrics.py counts program
+    values only from Peeky's own output, never from a Peeky doc's lines. It finds Peeky inside
+    scripts too: here-documents, `-c` code, and a Python list or command given to `subprocess`.
+    This round's value counts use it. The rest didn't land: Peeky commands per attempt still
+    count only the shell's own command lines, and no value is taken from Peeky's evidence
+    store.
 
 ## Power
 
@@ -257,7 +282,8 @@ two arms and seed. Screening is described apart, with `harness/screen.py status`
 - **Only bugs Peeky reaches.** The result says nothing of bugs it can't reach. The filter's
   results show how many that is.
 - **The languages are uneven.** The reach check, not the rule, sets the mix. After the refill,
-  the 50 survivors are Python 25, Java 15, C 5, C++ 0 and Rust 5 ([FILTER.md](FILTER.md)). So the
+  the 50 survivors are Python 25, Java 15, C 5, C++ 0 and Rust 5 ([FILTER.md](FILTER.md)), and
+  the deciding run on `1422812c` kept the same 50. So the
   result speaks mostly to Python and Java, nothing to C++, and little to C and Rust. Screening
   may skew it further. The report gives the final split, and results by language are exploration
   only.
@@ -287,6 +313,11 @@ cost 35.3 and `peeky-first` 48.5. So this estimate takes 35 (25 to 50) for contr
   building.
 - The per-attempt cap bounds the worst case at 250 credits each.
 - Not counted: the judges, as in rounds 1 and 2.
+- **Recorded, 4 November, for the final count.** The deciding run left 50 survivors, so the
+  screening estimate stands: 50 first attempts, then 2 more for each that fails, about 100
+  attempts (80 to 120), about 3,500 AI credits (2,000 to 6,000), and about 3.5 hours at 3 at
+  once. At most 150 attempts can run, so the cap bounds screening at 37,500 credits. The
+  deciding run cost no AI credits: about an hour and a quarter of building and checking.
 
 ## Reproducing
 
@@ -300,6 +331,8 @@ harness/study.sh run_one.py <bug> peeky-first 1 --fake-agent gold|noop --results
 harness/reach.sh <bug>
 # The deciding reach run, then screening.
 harness/screen.py survivors results/reach/<sha, 12>
+harness/first_call.py <bug> ... --reach results/reach/<sha, 12>   # the one --test call: decides nothing
+harness/deciding_table.py results/reach/<sha, 12> results/first-call/<sha, 12> results/image-check/<sha, 12>.tsv
 harness/screen.sh wave1 && harness/screen.sh wave2 && harness/screen.py status --write
 # The main run.
 harness/study.sh schedule.py --reps <k> --only <kept bugs> --concurrency 3 --budget-minutes 40 --budget-credits 250
@@ -307,7 +340,9 @@ harness/study.sh analyze.py
 ```
 
 Every Docker command of the filter ran through [harness/heavy.py](harness/heavy.py), which holds
-one of a few machine-wide slots (3 in the first pass), each limited to 4 CPUs and 6 GB.
+one of a few machine-wide slots (3 in the first pass), each limited to 4 CPUs and 6 GB. The
+deciding run ran its builds one at a time, and at most two containers at once, each also limited
+to 4 CPUs and 6 GB.
 
 ## Deviations
 
@@ -323,8 +358,10 @@ one of a few machine-wide slots (3 in the first pass), each limited to 4 CPUs an
 | --- | --- |
 | [select_candidates.py](select_candidates.py), [candidates/](candidates/) | The selection rule, the pool, the reserves, and the filter's logs. |
 | [study.json](study.json), [study-screening.json](study-screening.json) | The main run's and the screening's configs. |
+| [prompts/prompt-peeky-first.md](prompts/prompt-peeky-first.md) | `peeky-first`'s added prompt: round 2's, naming FIRST.md ([The main run](#the-main-run)). |
 | `bugs/<id>/` | Each candidate's files, as in round 1, plus `reach.json`, `peeky.sh` or `rust.json`, and `dropped.txt`. |
 | [FILTER.md](FILTER.md) | The filter's results. |
-| [harness/](harness/) | Wrappers that run rounds 1 and 2's harness with this round's config, the screening rule, and the power simulation. |
+| [harness/](harness/) | Wrappers that run rounds 1 and 2's harness with this round's config, the screening rule, the power simulation, and the one `--test` call. |
 | `results/reach/<sha>/` | Each reach run's records. |
+| `results/first-call/<sha>/`, `results/image-check/<sha>.tsv` | The deciding run's one `--test` call per gold point, and its Peeky images' check (the upstream fix solved, an unchanged checkout not). |
 | `results/screening/`, `results/runs/` | The screening's and the main run's attempts. |

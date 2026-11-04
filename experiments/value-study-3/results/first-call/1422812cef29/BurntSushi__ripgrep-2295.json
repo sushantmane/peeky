@@ -1,0 +1,61 @@
+{
+ "bug": "BurntSushi__ripgrep-2295",
+ "language": "rust",
+ "image": "peeky-study/burntsushi__ripgrep-2295:peeky-r3",
+ "image_id": "sha256:10764d0fdaaf75df5ea564adaa0512dd683e8bd011be3fc00a7e0f1e199a6480",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:29:22+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the changed `if self.0.opts.parents` in Ignore::matched_ignore (the only code hunk); the test's files are under /root/reach/rg, so the searched directory is given by its absolute path",
+   "at": "crates/ignore/src/dir.rs:443",
+   "test_command": "cargo run --bin rg -- --files-with-matches needle /root/reach/rg/rust",
+   "captures": [
+    "self",
+    "path",
+    "is_dir",
+    "any_git"
+   ],
+   "command": "peeky probe . --at crates/ignore/src/dir.rs:443 --capture self,path,is_dir,any_git --timeout 300 --json --test -- cargo run --bin rg -- --files-with-matches needle /root/reach/rg/rust",
+   "exit": 0,
+   "seconds": 23.5,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "exit",
+    "hits": 1,
+    "exit_code": 0,
+    "seconds": 14.113,
+    "warnings": [
+     "Peeky builds the test with Cargo, and runs its executable itself, in environments of its own: Cargo and build scripts get none of your variables, and the test only PATH (the toolchain's directory, /usr/bin and /bin), LC_ALL=C, a HOME of Peeky's, CARGO_MANIFEST_DIR and, in an integration test, CARGO_BIN_EXE_<name>. `cargo test` would pass on your environment, and more CARGO_* variables: a test or build script that reads one may run otherwise"
+    ]
+   },
+   "values": {
+    "read": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "self",
+      "value": "0x0000fffff7dbdf08"
+     },
+     {
+      "selector": "path",
+      "value": "&std::path::Path @ 0xfffff7dbc020"
+     },
+     {
+      "selector": "is_dir",
+      "value": "false"
+     },
+     {
+      "selector": "any_git",
+      "value": "false"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:29:47+00:00"
+}

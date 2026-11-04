@@ -1,0 +1,59 @@
+{
+ "bug": "django__django-11820",
+ "language": "python",
+ "image": "peeky-study/django__django-11820:peeky-r3",
+ "image_id": "sha256:9b8c64a931cba982dd1051f0e3d34259dc0bcbb03b43088b2aa39fbdd037502a",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:52:38+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the changed field lookup in Model._check_ordering's loop over related parts",
+   "at": "django/db/models/base.py:1711",
+   "test_command": "python tests/runtests.py --settings=test_sqlite --parallel 1 invalid_models_tests.test_models.OtherModelTests.test_ordering_pointing_multiple_times_to_model_fields",
+   "captures": [
+    "errors",
+    "f",
+    "field",
+    "fields"
+   ],
+   "command": "peeky probe . --at django/db/models/base.py:1711 --capture errors,f,field,fields --timeout 300 --json --test -- python tests/runtests.py --settings=test_sqlite --parallel 1 invalid_models_tests.test_models.OtherModelTests.test_ordering_pointing_multiple_times_to_model_fields",
+   "exit": 0,
+   "seconds": 2.0,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "exit",
+    "hits": 1,
+    "exit_code": 1,
+    "seconds": 1.708,
+    "warnings": []
+   },
+   "values": {
+    "read": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "errors",
+      "value": "[]"
+     },
+     {
+      "selector": "f",
+      "value": "'codename'"
+     },
+     {
+      "selector": "field",
+      "value": "'content_type__app_label'"
+     },
+     {
+      "selector": "fields",
+      "value": "['codename']"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:52:40+00:00"
+}

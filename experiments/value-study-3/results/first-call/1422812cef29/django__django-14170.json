@@ -1,0 +1,76 @@
+{
+ "bug": "django__django-14170",
+ "language": "python",
+ "image": "peeky-study/django__django-14170:peeky-r3",
+ "image_id": "sha256:d91ca7b95f33339338f3046624e34ec4cf480b3f014200f63a7da1d9b8a5c021",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:52:49+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the changed lower bound in year_lookup_bounds_for_date_field, the first executable line of the first hunk (the hunk's earlier changes are a signature and a docstring)",
+   "at": "django/db/backends/base/operations.py:537",
+   "test_command": "python tests/runtests.py --settings=test_sqlite --parallel 1 db_functions.datetime.test_extract_trunc.DateFunctionTests.test_extract_iso_year_func_boundaries",
+   "captures": [],
+   "command": "peeky probe . --at django/db/backends/base/operations.py:537 --timeout 300 --json --test -- python tests/runtests.py --settings=test_sqlite --parallel 1 db_functions.datetime.test_extract_trunc.DateFunctionTests.test_extract_iso_year_func_boundaries",
+   "exit": 1,
+   "seconds": 1.7,
+   "outcome": "no stop",
+   "detail": {
+    "code": "NO_STOP",
+    "message": "The program failed (exit code 1) without stopping at django/db/backends/base/operations.py:537; its output says why",
+    "hint": "The program failed before it reached the line: read its output, and check its arguments (everything after `--`) and input."
+   },
+   "stderr_tail": "peeky: test: python tests/runtests.py --settings=test_sqlite --parallel 1 db_functions.datetime.test_extract_trunc.DateFunctionTests.test_extract_iso_year_func_boundaries\npeeky: started; breakpoint django/db/backends/base/operations.py:537 verified\npeeky: waiting for the program to reach it...\npeeky: program finished after 0 hit(s)\n",
+   "leftover_processes": 1
+  },
+  {
+   "why": "the changed year_lookup_bounds_for_datetime_field call in YearLookup.year_lookup_bounds, the first line the last hunk removes",
+   "at": "django/db/models/lookups.py:544",
+   "test_command": "python tests/runtests.py --settings=test_sqlite --parallel 1 db_functions.datetime.test_extract_trunc.DateFunctionTests.test_extract_iso_year_func_boundaries",
+   "captures": [
+    "connection",
+    "output_field",
+    "self",
+    "year"
+   ],
+   "command": "peeky probe . --at django/db/models/lookups.py:544 --capture connection,output_field,self,year --timeout 300 --json --test -- python tests/runtests.py --settings=test_sqlite --parallel 1 db_functions.datetime.test_extract_trunc.DateFunctionTests.test_extract_iso_year_func_boundaries",
+   "exit": 0,
+   "seconds": 1.9,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "exit",
+    "hits": 1,
+    "exit_code": 1,
+    "seconds": 1.731,
+    "warnings": []
+   },
+   "values": {
+    "read": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "connection",
+      "value": "<django.db.backends.sqlite3.base.DatabaseWrapper object at 0xffffb8b16510>"
+     },
+     {
+      "selector": "output_field",
+      "value": "<django.db.models.fields.DateTimeField: start_datetime>"
+     },
+     {
+      "selector": "self",
+      "value": "<django.db.models.lookups.YearExact object at 0xffffb87561d0>"
+     },
+     {
+      "selector": "year",
+      "value": "2015"
+     }
+    ]
+   },
+   "leftover_processes": 2
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:52:53+00:00"
+}

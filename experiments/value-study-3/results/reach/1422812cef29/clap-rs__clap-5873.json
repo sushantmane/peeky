@@ -1,0 +1,123 @@
+{
+ "bug": "clap-rs__clap-5873",
+ "language": "rust",
+ "category": "D",
+ "image": "peeky-study/clap-rs__clap-5873:peeky-r3",
+ "image_id": "sha256:71e28e367a72a5610eb3ea090420a7f59bbc7e0d1f4d81483edec3dcf81606e8",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:31:18+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed `if let Some((name, _)) = did_you_mean` in Parser::did_you_mean_error, which the fix wraps (the only hunk)",
+   "at": "clap_builder/src/parser/parser.rs:1574",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/gold.json --build --at clap_builder/src/parser/parser.rs:1574 --name reach --timeout 300 --json -- --exact ignore_errors::did_you_mean --test-threads=1",
+     "exit": 0,
+     "seconds": 27.8
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 7.8
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/clap_builder/src/parser/parser.rs:1574",
+    "function": "clap_builder::parser::parser::Parser::did_you_mean_error::hfe79329634ecec5a",
+    "warnings": [
+     "Line 1574 stops up to 2 times per pass in clap_builder::parser::parser::Parser::did_you_mean_error (2 breakpoint locations): --hits, --set-hit and --set-at's @HIT count stops, not passes (as do session hit numbers); each hit's stop (1 to 2, in address order) says which location."
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 7,
+    "withheld": 1,
+    "sample": [
+     {
+      "name": "self",
+      "value": "0x0000fffff7dbb3e0"
+     },
+     {
+      "name": "arg",
+      "value": "&str @ 0xfffff7db9948"
+     },
+     {
+      "name": "matcher",
+      "value": "0x0000fffff7dbb338"
+     },
+     {
+      "name": "remaining_args",
+      "value": "&[&std::ffi::os_str::OsStr] @ 0xfffff7db9ba0"
+     },
+     {
+      "name": "trailing_values",
+      "value": "false"
+     },
+     {
+      "name": "longs",
+      "value": "alloc::vec::Vec<alloc::string::String, alloc::alloc::Global> @ 0xfffff7db9958"
+     }
+    ],
+    "withheld_sample": [
+     {
+      "name": "did_you_mean",
+      "value": "<unverified Rust enum value>"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "tests/builder/ignore_errors.rs:127",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tests/builder/ignore_errors.rs:127 --name reach --timeout 300 --json -- --exact ignore_errors::did_you_mean --test-threads=1",
+     "exit": 0,
+     "seconds": 28.5
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 4.4
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/tests/builder/ignore_errors.rs:127",
+    "function": "builder::ignore_errors::did_you_mean::hb906e771c7c0a7b9"
+   },
+   "moved": false,
+   "values": {
+    "shown": 0,
+    "withheld": 2,
+    "sample": [],
+    "withheld_sample": [
+     {
+      "name": "cmd",
+      "value": "clap_builder::builder::command::Command @ 0xfffff7dbb748",
+      "stale": "True"
+     },
+     {
+      "name": "r",
+      "value": "<unqualified Rust enum layout>"
+     }
+    ]
+   },
+   "leftover_processes": 2
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:32:27+00:00"
+}

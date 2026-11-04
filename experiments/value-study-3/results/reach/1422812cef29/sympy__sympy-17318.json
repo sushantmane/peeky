@@ -1,0 +1,101 @@
+{
+ "bug": "sympy__sympy-17318",
+ "language": "python",
+ "category": "D",
+ "image": "peeky-study/sympy__sympy-17318:peeky-r3",
+ "image_id": "sha256:e686a74f85bdc2b04c98b63fb8ad5a6c33e3bb5c92c5bb6a3d4672730addca91",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:53:31+00:00",
+ "needs": [],
+ "notes": "Run correction 1 (after the first reach run): `--run bin/test` was refused with INVALID_REQUEST 'entry must be a .py file inside the root' (bin/test has no .py suffix), so prepare copies it unchanged to bin/reach_test.py, beside the get_sympy.py it imports, and the run uses that with the same arguments.",
+ "prepare": [
+  {
+   "command": "cp bin/test bin/reach_test.py && ls -l bin/reach_test.py",
+   "exit": 0,
+   "seconds": 0.0,
+   "output": "-rwxr-xr-x 1 root root 4766 Nov  4 07:53 bin/reach_test.py\n"
+  }
+ ],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed condition in _sqrt_match (the only code hunk; radsimp.py's hunks are docstrings)",
+   "at": "sympy/simplify/sqrtdenest.py:159",
+   "commands": [
+    {
+     "command": "peeky session start . --run bin/reach_test.py --at sympy/simplify/sqrtdenest.py:159 --name reach --timeout 300 --json -- -C --verbose --no-subprocess sympy/simplify/tests/test_sqrtdenest.py -k test_issue_12420",
+     "exit": 0,
+     "seconds": 1.0
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/sympy/simplify/sqrtdenest.py:159",
+    "function": "_sqrt_match"
+   },
+   "moved": false,
+   "values": {
+    "shown": 2,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "p",
+      "value": "4 + I"
+     },
+     {
+      "name": "pargs",
+      "value": "[4, I]"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "sympy/simplify/tests/test_sqrtdenest.py:187",
+   "commands": [
+    {
+     "command": "peeky session start . --run bin/reach_test.py --at sympy/simplify/tests/test_sqrtdenest.py:187 --name reach --timeout 300 --json -- -C --verbose --no-subprocess sympy/simplify/tests/test_sqrtdenest.py -k test_issue_12420",
+     "exit": 0,
+     "seconds": 0.8
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/sympy/simplify/tests/test_sqrtdenest.py:187",
+    "function": "test_issue_12420"
+   },
+   "moved": false,
+   "values": {
+    "shown": 1,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "I",
+      "value": "I"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 4
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:53:35+00:00"
+}

@@ -1,0 +1,164 @@
+{
+ "bug": "mockito__mockito-3173",
+ "language": "java",
+ "category": "D",
+ "image": "peeky-study/mockito__mockito-3173:peeky-r3",
+ "image_id": "sha256:01dd7cc5814404089b7bccaf1847efe9b25526f9b6121f3b414dd05ed10213c6",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:04:00+00:00",
+ "needs": [],
+ "notes": "Gold points: the first hunk changes a field's declaration (mockitoConstruction's type and initializer), so the first code hunk is the isMockConstruction predicate's condition; the last is newInstance's callback. The failing test: java21:test, whose only test is the hidden RecordTest.",
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed condition in the isMockConstruction predicate (first code hunk)",
+   "at": "src/main/java/org/mockito/internal/creation/bytebuddy/InlineDelegateByteBuddyMockMaker.java:275",
+   "launch": {
+    "ready_seconds": 6.2
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at src/main/java/org/mockito/internal/creation/bytebuddy/InlineDelegateByteBuddyMockMaker.java:275 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 1.0
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/main/java/org/mockito/internal/creation/bytebuddy/InlineDelegateByteBuddyMockMaker.java:275",
+    "function": "InlineDelegateByteBuddyMockMaker.lambda$new$2(ThreadLocal,ThreadLocal,Predicate,Class)"
+   },
+   "moved": false,
+   "values": {
+    "shown": 5,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "isSuspended",
+      "value": "ThreadLocal$SuppliedThreadLocal@2593"
+     },
+     {
+      "name": "currentConstruction",
+      "value": "ThreadLocal@2594"
+     },
+     {
+      "name": "isCallFromSubclassConstructor",
+      "value": "StackWalkerChecker@2595"
+     },
+     {
+      "name": "type",
+      "value": "Class (AbstractCollection)@2590"
+     },
+     {
+      "name": "this",
+      "value": "InlineDelegateByteBuddyMockMaker@2596"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 4
+  },
+  {
+   "role": "gold",
+   "why": "the changed mockitoConstruction.set(true) in newInstance's construction callback (last code hunk)",
+   "at": "src/main/java/org/mockito/internal/creation/bytebuddy/InlineDelegateByteBuddyMockMaker.java:650",
+   "launch": {
+    "ready_seconds": 6.2
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at src/main/java/org/mockito/internal/creation/bytebuddy/InlineDelegateByteBuddyMockMaker.java:650 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 1.1
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/main/java/org/mockito/internal/creation/bytebuddy/InlineDelegateByteBuddyMockMaker.java:650",
+    "function": "InlineDelegateByteBuddyMockMaker.lambda$newInstance$4(MemberAccessor$ConstructionDispatcher)"
+   },
+   "moved": false,
+   "values": {
+    "shown": 2,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "callback",
+      "value": "InstrumentationMemberAccessor$$Lambda/0x00000006012357b0@2604"
+     },
+     {
+      "name": "this",
+      "value": "InlineDelegateByteBuddyMockMaker@2605"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 8
+  },
+  {
+   "role": "assertion",
+   "why": "the first assertion of the failing test (the spied record's name)",
+   "at": "subprojects/java21/src/test/java/org/mockito/java21/RecordTest.java:24",
+   "launch": {
+    "ready_seconds": 6.2
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at subprojects/java21/src/test/java/org/mockito/java21/RecordTest.java:24 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 1.1
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/subprojects/java21/src/test/java/org/mockito/java21/RecordTest.java:24",
+    "function": "RecordTest.given_list_is_already_spied__when_spying_record__then_record_fields_are_correctly_populated()"
+   },
+   "moved": false,
+   "values": {
+    "shown": 3,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "ignored",
+      "value": "ImmutableCollections$ListN@2763"
+     },
+     {
+      "name": "spiedRecord",
+      "value": "RecordTest$1MyRecord@2764"
+     },
+     {
+      "name": "this",
+      "value": "RecordTest@2765"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 12
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:04:29+00:00"
+}

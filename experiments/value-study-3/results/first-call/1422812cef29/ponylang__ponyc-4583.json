@@ -1,0 +1,96 @@
+{
+ "bug": "ponylang__ponyc-4583",
+ "language": "c",
+ "image": "peeky-study/ponylang__ponyc-4583:peeky-r3",
+ "image_id": "sha256:be7982dd0728dfe081c3e63b41a106aa249510c9d92a1dc956f7f0e20743eb16",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:28:35+00:00",
+ "prepare": [
+  {
+   "command": "mkdir -p build-peeky/full-program-tests && build-peeky/debug/ponyc --debug -o build-peeky/full-program-tests test/full-program-tests/regression-4582 > /root/reach/compile.log 2>&1; echo exit $?; tail -3 /root/reach/compile.log",
+   "exit": 0,
+   "seconds": 1.7,
+   "output": "exit 0\nVerifying\nWriting build-peeky/full-program-tests/regression-4582.o\nLinking build-peeky/full-program-tests/regression-4582\n"
+  }
+ ],
+ "points": [
+  {
+   "why": "first hunk that changes a statement (the one before it changes read_msg's signature): the ACK sent for a CNF in read_msg (509 is a comment)",
+   "at": "src/libponyrt/sched/scheduler.c:510",
+   "test_command": "build-peeky/full-program-tests/regression-4582",
+   "captures": [
+    "sched"
+   ],
+   "command": "peeky probe . --at src/libponyrt/sched/scheduler.c:510 --capture sched --timeout 300 --json --test -- build-peeky/full-program-tests/regression-4582",
+   "exit": 0,
+   "seconds": 3.1,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "exit",
+    "hits": 1,
+    "exit_code": 0,
+    "seconds": 2.716,
+    "warnings": [
+     "Peeky runs build-peeky/full-program-tests/regression-4582 in an environment of its own: of yours it passes only PATH, TMPDIR, TMP, TEMP, LANG and LC_ALL, and HOME is a directory of Peeky's. A test that reads another of your variables, or HOME, may run otherwise"
+    ]
+   },
+   "values": {
+    "read": 1,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "sched",
+      "value": "0x0000fffff7bfeec0"
+     }
+    ]
+   },
+   "leftover_processes": 0
+  },
+  {
+   "why": "last hunk: the changed read_msg call in run_pinned_actors",
+   "at": "src/libponyrt/sched/scheduler.c:1422",
+   "test_command": "build-peeky/full-program-tests/regression-4582",
+   "captures": [
+    "sched",
+    "actor",
+    "tsc"
+   ],
+   "command": "peeky probe . --at src/libponyrt/sched/scheduler.c:1422 --capture sched,actor,tsc --timeout 300 --json --test -- build-peeky/full-program-tests/regression-4582",
+   "exit": 0,
+   "seconds": 2.4,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "exit",
+    "hits": 1,
+    "exit_code": 0,
+    "seconds": 2.246,
+    "warnings": [
+     "Peeky runs build-peeky/full-program-tests/regression-4582 in an environment of its own: of yours it passes only PATH, TMPDIR, TMP, TEMP, LANG and LC_ALL, and HOME is a directory of Peeky's. A test that reads another of your variables, or HOME, may run otherwise"
+    ]
+   },
+   "values": {
+    "read": 3,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "sched",
+      "value": "0x0000fffff7bffc00"
+     },
+     {
+      "selector": "actor",
+      "value": "0x0000000000000000"
+     },
+     {
+      "selector": "tsc",
+      "value": "872049342889575"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:28:42+00:00"
+}

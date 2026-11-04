@@ -1,0 +1,59 @@
+{
+ "bug": "fasterxml__jackson-databind-3716",
+ "language": "java",
+ "image": "peeky-study/fasterxml__jackson-databind-3716:peeky-r3",
+ "image_id": "sha256:edc89a8701e1ca8c8aac61cc93250f538e02fc1c2ec19836c6fbdc53ed7dd338",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:02:50+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the removed idResolver(...) call in buildTypeSerializer, the first executable line of the only hunk in a base file (AsDeductionTypeSerializer.java is new)",
+   "at": "src/main/java/com/fasterxml/jackson/databind/jsontype/impl/StdTypeResolverBuilder.java:112",
+   "test_command": "mvn test -B -o '-Dtest=com.fasterxml.jackson.databind.jsontype.TestPolymorphicDeduction#testWithPojoAsJsonValue'",
+   "captures": [
+    "config",
+    "baseType",
+    "subtypes",
+    "this"
+   ],
+   "command": "peeky probe . --at src/main/java/com/fasterxml/jackson/databind/jsontype/impl/StdTypeResolverBuilder.java:112 --capture config,baseType,subtypes,this --timeout 300 --json --test -- mvn test -B -o '-Dtest=com.fasterxml.jackson.databind.jsontype.TestPolymorphicDeduction#testWithPojoAsJsonValue'",
+   "exit": 0,
+   "seconds": 9.1,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "hits",
+    "hits": 1,
+    "exit_code": null,
+    "seconds": 0.494,
+    "warnings": []
+   },
+   "values": {
+    "read": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "config",
+      "value": "SerializationConfig@857"
+     },
+     {
+      "selector": "baseType",
+      "value": "SimpleType@858"
+     },
+     {
+      "selector": "subtypes",
+      "value": "ArrayList@859"
+     },
+     {
+      "selector": "this",
+      "value": "StdTypeResolverBuilder@860"
+     }
+    ]
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:03:00+00:00"
+}

@@ -1,0 +1,81 @@
+{
+ "bug": "tokio-rs__tokio-5179",
+ "language": "rust",
+ "image": "peeky-study/tokio-rs__tokio-5179:peeky-r3",
+ "image_id": "sha256:1643f81d7fa7ce6730b7f88088c4363ca7c038e46cd5c49c0f5f06f20b285579",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:33:48+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the changed call in context::budget (first code hunk; the line above it is the signature)",
+   "at": "tokio/src/runtime/context.rs:67",
+   "test_command": "cargo test -p tokio --test task_local_set --features full store_local_set_in_thread_local_with_runtime -- --exact --test-threads=1",
+   "captures": [],
+   "command": "peeky probe . --at tokio/src/runtime/context.rs:67 --timeout 300 --json --test -- cargo test -p tokio --test task_local_set --features full store_local_set_in_thread_local_with_runtime -- --exact --test-threads=1",
+   "exit": 1,
+   "seconds": 37.4,
+   "outcome": "stopped, none read",
+   "detail": {
+    "status": "failed",
+    "ended": null,
+    "hits": 1,
+    "exit_code": null,
+    "seconds": 20.936,
+    "warnings": [
+     "Peeky builds the test with Cargo, and runs its executable itself, in environments of its own: Cargo and build scripts get none of your variables, and the test only PATH (the toolchain's directory, /usr/bin and /bin), LC_ALL=C, a HOME of Peeky's, CARGO_MANIFEST_DIR and, in an integration test, CARGO_BIN_EXE_<name>. `cargo test` would pass on your environment, and more CARGO_* variables: a test or build script that reads one may run otherwise"
+    ],
+    "error": {
+     "code": "PROGRAM_CRASHED",
+     "message": "The program crashed after hit 1: signal SIGABRT, outside the program's sources, with no frame of its code among the first 64. Peeky ended it there, so it has no exit status"
+    }
+   },
+   "values": {
+    "read": 0,
+    "withheld": 0,
+    "sample": []
+   },
+   "stderr_tail": "peeky: test: cargo test -p tokio --test task_local_set --features full store_local_set_in_thread_local_with_runtime -- --exact --test-threads=1\npeeky: building: No current Peeky build of this workspace\npeeky: building /testbed (analysed: tokio)\npeeky: built in 16.28 s\npeeky: started; breakpoint tokio/src/runtime/context.rs:67 verified\npeeky: waiting for the program to reach it...\npeeky: hit 1/1 at tokio/src/runtime/context.rs:67; capturing\npeeky: all requested hits captured; letting the program finish\npeeky: the program crashed after 1 hit(s)\n",
+   "leftover_processes": 0
+  },
+  {
+   "why": "the first statement of the file the fix deletes, in VecDequeCell::with_capacity (last code hunk; the lines above it are imports and declarations)",
+   "at": "tokio/src/util/vec_deque_cell.rs:18",
+   "test_command": "cargo test -p tokio --test task_local_set --features full store_local_set_in_thread_local_with_runtime -- --exact --test-threads=1",
+   "captures": [
+    "cap"
+   ],
+   "command": "peeky probe . --at tokio/src/util/vec_deque_cell.rs:18 --capture cap --timeout 300 --json --test -- cargo test -p tokio --test task_local_set --features full store_local_set_in_thread_local_with_runtime -- --exact --test-threads=1",
+   "exit": 1,
+   "seconds": 32.2,
+   "outcome": "read",
+   "detail": {
+    "status": "failed",
+    "ended": null,
+    "hits": 1,
+    "exit_code": null,
+    "seconds": 30.9,
+    "warnings": [
+     "Peeky builds the test with Cargo, and runs its executable itself, in environments of its own: Cargo and build scripts get none of your variables, and the test only PATH (the toolchain's directory, /usr/bin and /bin), LC_ALL=C, a HOME of Peeky's, CARGO_MANIFEST_DIR and, in an integration test, CARGO_BIN_EXE_<name>. `cargo test` would pass on your environment, and more CARGO_* variables: a test or build script that reads one may run otherwise"
+    ],
+    "error": {
+     "code": "PROGRAM_CRASHED",
+     "message": "The program crashed after hit 1: signal SIGABRT, outside the program's sources, with no frame of its code among the first 64. Peeky ended it there, so it has no exit status"
+    }
+   },
+   "values": {
+    "read": 1,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "cap",
+      "value": "64"
+     }
+    ]
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:34:58+00:00"
+}

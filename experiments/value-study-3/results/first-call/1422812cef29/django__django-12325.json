@@ -1,0 +1,100 @@
+{
+ "bug": "django__django-12325",
+ "language": "python",
+ "image": "peeky-study/django__django-12325:peeky-r3",
+ "image_id": "sha256:66bb2995cb46e1bc68489b2239c1759322f896f9a58a7861faec8ca9b6fddd7e",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:52:40+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the changed OneToOneField condition where ModelBase.__new__ collects parent links (the first hunk)",
+   "at": "django/db/models/base.py:205",
+   "test_command": "python tests/runtests.py --settings=test_sqlite --parallel 1 invalid_models_tests.test_relative_fields.ComplexClashTests.test_clash_parent_link",
+   "captures": [
+    "abstract",
+    "app_config",
+    "app_label",
+    "attrs"
+   ],
+   "command": "peeky probe . --at django/db/models/base.py:205 --capture abstract,app_config,app_label,attrs --timeout 300 --json --test -- python tests/runtests.py --settings=test_sqlite --parallel 1 invalid_models_tests.test_relative_fields.ComplexClashTests.test_clash_parent_link",
+   "exit": 0,
+   "seconds": 2.0,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "exit",
+    "hits": 1,
+    "exit_code": 1,
+    "seconds": 1.766,
+    "warnings": []
+   },
+   "values": {
+    "read": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "abstract",
+      "value": "False"
+     },
+     {
+      "selector": "app_config",
+      "value": "<ContentTypesConfig: contenttypes>"
+     },
+     {
+      "selector": "app_label",
+      "value": "'contenttypes'"
+     },
+     {
+      "selector": "attrs",
+      "value": "{'__qualname__': 'ContentType', 'app_label': <django.db.models.fields.CharField: app_label>, 'model': <django.db.models.fields.CharField: model>, 'objects': <dj"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  },
+  {
+   "why": "the removed parent_link check in Options._prepare (the last hunk)",
+   "at": "django/db/models/options.py:254",
+   "test_command": "python tests/runtests.py --settings=test_sqlite --parallel 1 invalid_models_tests.test_relative_fields.ComplexClashTests.test_clash_parent_link",
+   "captures": [
+    "already_created",
+    "field",
+    "self"
+   ],
+   "command": "peeky probe . --at django/db/models/options.py:254 --capture already_created,field,self --timeout 300 --json --test -- python tests/runtests.py --settings=test_sqlite --parallel 1 invalid_models_tests.test_relative_fields.ComplexClashTests.test_clash_parent_link",
+   "exit": 0,
+   "seconds": 1.9,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "exit",
+    "hits": 1,
+    "exit_code": 1,
+    "seconds": 1.692,
+    "warnings": []
+   },
+   "values": {
+    "read": 3,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "already_created",
+      "value": "[<django.db.models.fields.related.OneToOneField: other_parent>]"
+     },
+     {
+      "selector": "field",
+      "value": "<django.db.models.fields.related.OneToOneField: other_parent>"
+     },
+     {
+      "selector": "self",
+      "value": "<Options for Child>"
+     }
+    ]
+   },
+   "leftover_processes": 2
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:52:45+00:00"
+}

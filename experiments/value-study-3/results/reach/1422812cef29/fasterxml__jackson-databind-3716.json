@@ -1,0 +1,108 @@
+{
+ "bug": "fasterxml__jackson-databind-3716",
+ "language": "java",
+ "category": "B",
+ "image": "peeky-study/fasterxml__jackson-databind-3716:peeky-r3",
+ "image_id": "sha256:edc89a8701e1ca8c8aac61cc93250f538e02fc1c2ec19836c6fbdc53ed7dd338",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:02:14+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the removed idResolver(...) call in buildTypeSerializer, the first executable line of the only hunk in a base file (AsDeductionTypeSerializer.java is new)",
+   "at": "src/main/java/com/fasterxml/jackson/databind/jsontype/impl/StdTypeResolverBuilder.java:112",
+   "launch": {
+    "ready_seconds": 6.2
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at src/main/java/com/fasterxml/jackson/databind/jsontype/impl/StdTypeResolverBuilder.java:112 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 0.8
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/main/java/com/fasterxml/jackson/databind/jsontype/impl/StdTypeResolverBuilder.java:112",
+    "function": "StdTypeResolverBuilder.buildTypeSerializer(SerializationConfig,JavaType,Collection)"
+   },
+   "moved": false,
+   "values": {
+    "shown": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "config",
+      "value": "SerializationConfig@857"
+     },
+     {
+      "name": "baseType",
+      "value": "SimpleType@858"
+     },
+     {
+      "name": "subtypes",
+      "value": "ArrayList@859"
+     },
+     {
+      "name": "this",
+      "value": "StdTypeResolverBuilder@860"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 4
+  },
+  {
+   "role": "assertion",
+   "why": "the first assertion of testWithPojoAsJsonValue, the first failing test",
+   "at": "src/test/java/com/fasterxml/jackson/databind/jsontype/TestPolymorphicDeduction.java:285",
+   "launch": {
+    "ready_seconds": 6.2
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at src/test/java/com/fasterxml/jackson/databind/jsontype/TestPolymorphicDeduction.java:285 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 0.7
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/test/java/com/fasterxml/jackson/databind/jsontype/TestPolymorphicDeduction.java:285",
+    "function": "TestPolymorphicDeduction.testWithPojoAsJsonValue()"
+   },
+   "moved": false,
+   "values": {
+    "shown": 1,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "this",
+      "value": "TestPolymorphicDeduction@787"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 8
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:02:33+00:00"
+}

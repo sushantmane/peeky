@@ -1,0 +1,59 @@
+{
+ "bug": "apache__dubbo-7041",
+ "language": "java",
+ "image": "peeky-study/apache__dubbo-7041:peeky-r3",
+ "image_id": "sha256:8c97e67e04c73b65913f528a9dc349072641bbd32c4ae6843d5797e14699b138",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:59:50+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the statement after the inserted TypeVariable branch in getReturnTypes (the else branch's cast; the only code hunk)",
+   "at": "dubbo-common/src/main/java/org/apache/dubbo/common/utils/ReflectUtils.java:1206",
+   "test_command": "mvn -B -o --no-transfer-progress -pl dubbo-common test -Dsurefire.useFile=false '-Dtest=ReflectUtilsTest#testGetReturnTypes'",
+   "captures": [
+    "method",
+    "returnType",
+    "genericReturnType",
+    "actualArgType"
+   ],
+   "command": "peeky probe . --at dubbo-common/src/main/java/org/apache/dubbo/common/utils/ReflectUtils.java:1206 --capture method,returnType,genericReturnType,actualArgType --timeout 300 --json --test -- mvn -B -o --no-transfer-progress -pl dubbo-common test -Dsurefire.useFile=false '-Dtest=ReflectUtilsTest#testGetReturnTypes'",
+   "exit": 0,
+   "seconds": 5.5,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "hits",
+    "hits": 1,
+    "exit_code": null,
+    "seconds": 0.503,
+    "warnings": []
+   },
+   "values": {
+    "read": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "method",
+      "value": "Method@950"
+     },
+     {
+      "selector": "returnType",
+      "value": "Class (CompletableFuture)@951"
+     },
+     {
+      "selector": "genericReturnType",
+      "value": "ParameterizedTypeImpl@952"
+     },
+     {
+      "selector": "actualArgType",
+      "value": "Class (String)@953"
+     }
+    ]
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:59:56+00:00"
+}

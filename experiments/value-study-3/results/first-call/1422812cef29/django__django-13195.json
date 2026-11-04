@@ -1,0 +1,100 @@
+{
+ "bug": "django__django-13195",
+ "language": "python",
+ "image": "peeky-study/django__django-13195:peeky-r3",
+ "image_id": "sha256:f871a6532b5bdf5253141605efa5a614ac85d48c316dedf7083030acad612b5d",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:52:45+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the changed delete_cookie call in CookieStorage._update_cookie (the first hunk)",
+   "at": "django/contrib/messages/storage/cookie.py:95",
+   "test_command": "python tests/runtests.py --settings=test_sqlite --parallel 1 messages_tests.test_cookie.CookieTests.test_cookie_setings",
+   "captures": [
+    "encoded_data",
+    "response",
+    "self"
+   ],
+   "command": "peeky probe . --at django/contrib/messages/storage/cookie.py:95 --capture encoded_data,response,self --timeout 300 --json --test -- python tests/runtests.py --settings=test_sqlite --parallel 1 messages_tests.test_cookie.CookieTests.test_cookie_setings",
+   "exit": 0,
+   "seconds": 2.0,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "exit",
+    "hits": 1,
+    "exit_code": 1,
+    "seconds": 1.72,
+    "warnings": []
+   },
+   "values": {
+    "read": 3,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "encoded_data",
+      "value": "None"
+     },
+     {
+      "selector": "response",
+      "value": "<HttpResponse status_code=200, \"text/html; charset=utf-8\">"
+     },
+     {
+      "selector": "self",
+      "value": "<django.contrib.messages.storage.cookie.CookieStorage object at 0xffffa5194c10>"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  },
+  {
+   "why": "the changed secure computation in HttpResponseBase.delete_cookie (the last hunk)",
+   "at": "django/http/response.py:216",
+   "test_command": "python tests/runtests.py --settings=test_sqlite --parallel 1 sessions_tests.tests.SessionMiddlewareTests.test_session_delete_on_end",
+   "captures": [
+    "domain",
+    "key",
+    "path",
+    "self"
+   ],
+   "command": "peeky probe . --at django/http/response.py:216 --capture domain,key,path,self --timeout 300 --json --test -- python tests/runtests.py --settings=test_sqlite --parallel 1 sessions_tests.tests.SessionMiddlewareTests.test_session_delete_on_end",
+   "exit": 0,
+   "seconds": 2.0,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "exit",
+    "hits": 1,
+    "exit_code": 1,
+    "seconds": 1.743,
+    "warnings": []
+   },
+   "values": {
+    "read": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "domain",
+      "value": "None"
+     },
+     {
+      "selector": "key",
+      "value": "'sessionid'"
+     },
+     {
+      "selector": "path",
+      "value": "'/'"
+     },
+     {
+      "selector": "self",
+      "value": "<HttpResponse status_code=200, \"text/html; charset=utf-8\">"
+     }
+    ]
+   },
+   "leftover_processes": 2
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:52:49+00:00"
+}

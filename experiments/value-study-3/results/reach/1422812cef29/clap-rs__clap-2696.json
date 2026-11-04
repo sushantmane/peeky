@@ -1,0 +1,56 @@
+{
+ "bug": "clap-rs__clap-2696",
+ "language": "rust",
+ "category": "D",
+ "image": "peeky-study/clap-rs__clap-2696:peeky-r3",
+ "image_id": "sha256:46a46a265990243e31b46d24751b3590d54d4ee278d29a1d02e67b2601fe08c5",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:55:58+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the removed MultipleValues condition of the self-override check in Parser::remove_overrides (the only code hunk; src/build/arg/mod.rs's hunks are docs)",
+   "at": "src/parse/parser.rs:1614",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at src/parse/parser.rs:1614 --name reach --timeout 300 --json -- --exact issue_1374_overrides_self_with_multiple_values --test-threads=1",
+     "exit": 2,
+     "seconds": 2.6
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "BUILD_FAILED",
+    "message": "The build failed: cargo exited with code 101\nerror: specification `clap` is ambiguous\nhelp: re-run this command with one of the following specifications\n  clap@2.34.0\n  clap@3.0.0-beta.2",
+    "hint": "Fix the error the compiler reports and run again. With --old/--new it is the edit that does not build; your files were not changed.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "tests/posix_compatible.rs:322",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tests/posix_compatible.rs:322 --name reach --timeout 300 --json -- --exact issue_1374_overrides_self_with_multiple_values --test-threads=1",
+     "exit": 2,
+     "seconds": 1.6
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "BUILD_FAILED",
+    "message": "The build failed: cargo exited with code 101\nerror: specification `clap` is ambiguous\nhelp: re-run this command with one of the following specifications\n  clap@2.34.0\n  clap@3.0.0-beta.2",
+    "hint": "Fix the error the compiler reports and run again. With --old/--new it is the edit that does not build; your files were not changed.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:56:03+00:00"
+}

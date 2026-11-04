@@ -1,0 +1,66 @@
+{
+ "bug": "google__gson-1100",
+ "language": "java",
+ "image": "peeky-study/google__gson-1100:peeky-r3",
+ "image_id": "sha256:942510fb542aa5ac9867f4e7b2b77d569aae6c5e83ba238385b6712a62d4b27c",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:34:59+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the statement after the inserted null check in write (first hunk): the synchronized formatting block",
+   "at": "gson/src/main/java/com/google/gson/DefaultDateTypeAdapter.java:87",
+   "test_command": "mvn test -B -o -pl gson '-Dtest=com.google.gson.DefaultDateTypeAdapterTest#testNullValue'",
+   "captures": [],
+   "command": "peeky probe . --at gson/src/main/java/com/google/gson/DefaultDateTypeAdapter.java:87 --timeout 300 --json --test -- mvn test -B -o -pl gson '-Dtest=com.google.gson.DefaultDateTypeAdapterTest#testNullValue'",
+   "exit": 1,
+   "seconds": 5.2,
+   "outcome": "no stop",
+   "detail": {
+    "code": "NO_STOP",
+    "message": "The program finished without stopping at gson/src/main/java/com/google/gson/DefaultDateTypeAdapter.java:87; check `peeky describe` for executable lines",
+    "hint": "Pick a line the program executes; see `peeky describe`."
+   },
+   "stderr_tail": "peeky: test: mvn test -B -o -pl gson '-Dtest=com.google.gson.DefaultDateTypeAdapterTest#testNullValue'\npeeky: started maven; its output goes to /root/.peeky/tests/java-test-c2756dd83c18.log\npeeky: the test JVM (pid 85) waits on port 36929; attaching\npeeky: started; breakpoint gson/src/main/java/com/google/gson/DefaultDateTypeAdapter.java:87 pending until its class or module loads\npeeky: waiting for the program to reach it...\npeeky: breakpoint verified\npeeky: program finished after 0 hit(s)\n",
+   "leftover_processes": 0
+  },
+  {
+   "why": "the changed token check in read (last hunk)",
+   "at": "gson/src/main/java/com/google/gson/DefaultDateTypeAdapter.java:95",
+   "test_command": "mvn test -B -o -pl gson '-Dtest=com.google.gson.DefaultDateTypeAdapterTest#testNullValue'",
+   "captures": [
+    "in",
+    "this"
+   ],
+   "command": "peeky probe . --at gson/src/main/java/com/google/gson/DefaultDateTypeAdapter.java:95 --capture in,this --timeout 300 --json --test -- mvn test -B -o -pl gson '-Dtest=com.google.gson.DefaultDateTypeAdapterTest#testNullValue'",
+   "exit": 0,
+   "seconds": 5.2,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "hits",
+    "hits": 1,
+    "exit_code": null,
+    "seconds": 0.357,
+    "warnings": []
+   },
+   "values": {
+    "read": 2,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "in",
+      "value": "JsonReader@723"
+     },
+     {
+      "selector": "this",
+      "value": "DefaultDateTypeAdapter@724"
+     }
+    ]
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:35:10+00:00"
+}

@@ -1,0 +1,131 @@
+{
+ "bug": "elastic__logstash-16681",
+ "language": "java",
+ "category": "D",
+ "image": "peeky-study/elastic__logstash-16681:peeky-r3",
+ "image_id": "sha256:2544eabae860a6ebd830476ac937bc763071d6e2fa0fe3ccac9f5067c82fa820",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:59:55+00:00",
+ "needs": [],
+ "notes": "One code hunk (mutate), so one gold point: its first removed line is a comment (line 144), and the first statement it changes is line 146. The failing test is blockingShutdownDeadlock with the PipelineBusV2 parameter; the filter runs both parameters (V1 doesn't run PipelineBusV2's code).",
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the first statement the only code hunk changes: reading the address state's input inside mutate's compute lambda, before notifying it",
+   "at": "logstash-core/src/main/java/org/logstash/plugins/pipeline/PipelineBusV2.java:146",
+   "launch": {
+    "ready_seconds": 6.2
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at logstash-core/src/main/java/org/logstash/plugins/pipeline/PipelineBusV2.java:146 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 0.9
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/logstash-core/src/main/java/org/logstash/plugins/pipeline/PipelineBusV2.java:146",
+    "function": "PipelineBusV2$AddressStateMapping.lambda$mutate$0(String,Consumer,String,AddressState)"
+   },
+   "moved": false,
+   "values": {
+    "shown": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "address",
+      "value": "\"fooAddr\""
+     },
+     {
+      "name": "consumer",
+      "value": "1859631557@2053"
+     },
+     {
+      "name": "a",
+      "value": "\"fooAddr\""
+     },
+     {
+      "name": "addressState",
+      "value": "AddressState@2054"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 4
+  },
+  {
+   "role": "assertion",
+   "why": "the first assertion of blockingShutdownDeadlock (assertThatCode on the two futures, 1 s deadline)",
+   "at": "logstash-core/src/test/java/org/logstash/plugins/pipeline/PipelineBusTest.java:343",
+   "launch": {
+    "ready_seconds": 6.2
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at logstash-core/src/test/java/org/logstash/plugins/pipeline/PipelineBusTest.java:343 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 0.9
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/logstash-core/src/test/java/org/logstash/plugins/pipeline/PipelineBusTest.java:343",
+    "function": "PipelineBusTest.blockingShutdownDeadlock()",
+    "warnings": [
+     "Line 343 runs in several methods; the debugger stops only in blockingShutdownDeadlock there, never in lambda$blockingShutdownDeadlock$19. To stop in one of those, put the breakpoint on a line of its own, or `session step --into` from this line (a method reference has no line of its own)"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 6,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "executor",
+      "value": "ThreadPoolExecutor@2097"
+     },
+     {
+      "name": "i",
+      "value": "0"
+     },
+     {
+      "name": "startLatch",
+      "value": "CountDownLatch@2098"
+     },
+     {
+      "name": "unlistenFuture",
+      "value": "CompletableFuture@2099"
+     },
+     {
+      "name": "unregisterFuture",
+      "value": "CompletableFuture@2100"
+     },
+     {
+      "name": "this",
+      "value": "PipelineBusTest@2101"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 8
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:00:14+00:00"
+}

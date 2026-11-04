@@ -1,0 +1,120 @@
+{
+ "bug": "fasterxml__jackson-core-1016",
+ "language": "java",
+ "category": "E",
+ "image": "peeky-study/fasterxml__jackson-core-1016:peeky-r3",
+ "image_id": "sha256:0936bafa47f8b8cfaf37b689f5ac11999378193c8cba9a16d13e246d0f1afd02",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:56:31+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "first hunk: the changed makeChild(...) call in createNonBlockingByteArrayParser. No failing test runs it at base (both fail at the DataInput parser's assertNotSame first), so it uses the first failing test, testCanonicalizationEnabled",
+   "at": "src/main/java/com/fasterxml/jackson/core/JsonFactory.java:1302",
+   "launch": {
+    "ready_seconds": 3.1
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at src/main/java/com/fasterxml/jackson/core/JsonFactory.java:1302 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 0.8
+    }
+   ],
+   "outcome": "no stop",
+   "detail": {
+    "state": "terminated",
+    "reason": null,
+    "location": null,
+    "function": null
+   },
+   "program": {
+    "state": "terminated",
+    "exit_code": 0,
+    "output_tail": ""
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "gold",
+   "why": "last hunk, a pure insertion in _addName: the statement just after it (if (lastQuadBytes < 4)). No failing test runs it at base either; the first failing test, testCanonicalizationEnabled",
+   "at": "src/main/java/com/fasterxml/jackson/core/json/async/NonBlockingJsonParserBase.java:794",
+   "launch": {
+    "ready_seconds": 3.1
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at src/main/java/com/fasterxml/jackson/core/json/async/NonBlockingJsonParserBase.java:794 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 0.7
+    }
+   ],
+   "outcome": "no stop",
+   "detail": {
+    "state": "terminated",
+    "reason": null,
+    "location": null,
+    "function": null
+   },
+   "program": {
+    "state": "terminated",
+    "exit_code": 0,
+    "output_tail": ""
+   },
+   "leftover_processes": 4
+  },
+  {
+   "role": "assertion",
+   "why": "the first assertion testCanonicalizationEnabled runs: assertToken in verifyCanonicalizationTestResult, which doCanonicalizationTest calls first",
+   "at": "src/test/java/com/fasterxml/jackson/core/json/JsonFactoryTest.java:335",
+   "launch": {
+    "ready_seconds": 3.1
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at src/test/java/com/fasterxml/jackson/core/json/JsonFactoryTest.java:335 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 0.7
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/test/java/com/fasterxml/jackson/core/json/JsonFactoryTest.java:335",
+    "function": "JsonFactoryTest.verifyCanonicalizationTestResult(JsonParser,boolean)"
+   },
+   "moved": false,
+   "values": {
+    "shown": 3,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "parser",
+      "value": "ReaderBasedJsonParser@1172"
+     },
+     {
+      "name": "canonicalize",
+      "value": "false"
+     },
+     {
+      "name": "this",
+      "value": "JsonFactoryTest@1173"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 8
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:56:50+00:00"
+}

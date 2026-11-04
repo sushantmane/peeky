@@ -1,0 +1,61 @@
+{
+ "bug": "astropy__astropy-13977",
+ "language": "python",
+ "image": "peeky-study/astropy__astropy-13977:peeky-r3",
+ "image_id": "sha256:79ce068e5b6977e9870251864019abda31e5f1b73da5254670bb9554dade9bb4",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:52:08+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the first statement the fix changes (wraps in try) in Quantity.__array_ufunc__: the converters_and_unit call (the only hunk; its first changed lines are docstring)",
+   "at": "astropy/units/quantity.py:643",
+   "test_command": "python -m pytest -q -p no:cacheprovider 'astropy/units/tests/test_quantity_ufuncs.py::TestUfuncReturnsNotImplemented::TestBinaryUfuncs::test_full[None-duck_quantity0-quantity0-add]'",
+   "captures": [
+    "function",
+    "inputs",
+    "kwargs",
+    "method"
+   ],
+   "command": "peeky probe . --at astropy/units/quantity.py:643 --capture function,inputs,kwargs,method --timeout 300 --json --test -- python -m pytest -q -p no:cacheprovider 'astropy/units/tests/test_quantity_ufuncs.py::TestUfuncReturnsNotImplemented::TestBinaryUfuncs::test_full[None-duck_quantity0-quantity0-add]'",
+   "exit": 0,
+   "seconds": 2.4,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "exit",
+    "hits": 1,
+    "exit_code": 1,
+    "seconds": 2.194,
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "values": {
+    "read": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "function",
+      "value": "<ufunc 'multiply'>"
+     },
+     {
+      "selector": "inputs",
+      "value": "(<Quantity 1. Bq>, 37000000000.0)"
+     },
+     {
+      "selector": "kwargs",
+      "value": "{}"
+     },
+     {
+      "selector": "method",
+      "value": "'__call__'"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:52:12+00:00"
+}

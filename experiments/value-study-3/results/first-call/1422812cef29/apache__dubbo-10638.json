@@ -1,0 +1,66 @@
+{
+ "bug": "apache__dubbo-10638",
+ "language": "java",
+ "image": "peeky-study/apache__dubbo-10638:peeky-r3",
+ "image_id": "sha256:db613d2163867374aac3ecf2821cb4c6f5ecace2e5f378f4cbebb8acf82fb4e7",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:59:38+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the changed LocalTime conversion in compatibleTypeConvert (first code hunk)",
+   "at": "dubbo-common/src/main/java/org/apache/dubbo/common/utils/CompatibleTypeUtils.java:131",
+   "test_command": "mvn -B -o --no-transfer-progress -pl dubbo-common test -Dsurefire.useFile=false '-Dtest=PojoUtilsTest#testJava8Time'",
+   "captures": [],
+   "command": "peeky probe . --at dubbo-common/src/main/java/org/apache/dubbo/common/utils/CompatibleTypeUtils.java:131 --timeout 300 --json --test -- mvn -B -o --no-transfer-progress -pl dubbo-common test -Dsurefire.useFile=false '-Dtest=PojoUtilsTest#testJava8Time'",
+   "exit": 1,
+   "seconds": 6.6,
+   "outcome": "no stop",
+   "detail": {
+    "code": "NO_STOP",
+    "message": "The program finished without stopping at dubbo-common/src/main/java/org/apache/dubbo/common/utils/CompatibleTypeUtils.java:131; check `peeky describe` for executable lines",
+    "hint": "Pick a line the program executes; see `peeky describe`."
+   },
+   "stderr_tail": "peeky: test: mvn -B -o --no-transfer-progress -pl dubbo-common test -Dsurefire.useFile=false '-Dtest=PojoUtilsTest#testJava8Time'\npeeky: started maven; its output goes to /root/.peeky/tests/java-test-c3d013d78068.log\npeeky: the test JVM (pid 122) waits on port 41043; attaching\npeeky: started; breakpoint dubbo-common/src/main/java/org/apache/dubbo/common/utils/CompatibleTypeUtils.java:131 pending until its class or module loads\npeeky: waiting for the program to reach it...\npeeky: program finished after 0 hit(s)\n",
+   "leftover_processes": 0
+  },
+  {
+   "why": "the statement after the inserted java.time branch in generalize (last code hunk)",
+   "at": "dubbo-common/src/main/java/org/apache/dubbo/common/utils/PojoUtils.java:145",
+   "test_command": "mvn -B -o --no-transfer-progress -pl dubbo-common test -Dsurefire.useFile=false '-Dtest=PojoUtilsTest#testJava8Time'",
+   "captures": [
+    "pojo",
+    "history"
+   ],
+   "command": "peeky probe . --at dubbo-common/src/main/java/org/apache/dubbo/common/utils/PojoUtils.java:145 --capture pojo,history --timeout 300 --json --test -- mvn -B -o --no-transfer-progress -pl dubbo-common test -Dsurefire.useFile=false '-Dtest=PojoUtilsTest#testJava8Time'",
+   "exit": 0,
+   "seconds": 4.7,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "hits",
+    "hits": 1,
+    "exit_code": null,
+    "seconds": 0.515,
+    "warnings": []
+   },
+   "values": {
+    "read": 2,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "pojo",
+      "value": "LocalDateTime@2332"
+     },
+     {
+      "selector": "history",
+      "value": "IdentityHashMap@2333"
+     }
+    ]
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:59:50+00:00"
+}

@@ -1,0 +1,124 @@
+{
+ "bug": "astropy__astropy-14598",
+ "language": "python",
+ "category": "D",
+ "image": "peeky-study/astropy__astropy-14598:peeky-r3",
+ "image_id": "sha256:1bed5291e2bfddaf40bf98a7cd4eb61aa47be6879fd3c08426e0c8a678a4e9ed",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:49:36+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed unescaping of a CONTINUE sub-card's string in Card._split (the only code hunk; the other changes the class-level regex constant _strg_comment_RE, a declaration)",
+   "at": "astropy/io/fits/card.py:862",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at astropy/io/fits/card.py:862 --name reach --timeout 300 --json -- -q -p no:cacheprovider astropy/io/fits/tests/test_header.py::TestHeaderFunctions::test_long_string_value_with_quotes",
+     "exit": 0,
+     "seconds": 1.4
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/astropy/io/fits/card.py:862",
+    "function": "_split",
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 10,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "card",
+      "value": "('TEST', 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx&', '')"
+     },
+     {
+      "name": "comments",
+      "value": "[]"
+     },
+     {
+      "name": "image",
+      "value": "\"TEST    = 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx&'CONTINUE  'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'''''                              "
+     },
+     {
+      "name": "keyword",
+      "value": "'TEST'"
+     },
+     {
+      "name": "kw",
+      "value": "'TEST'"
+     },
+     {
+      "name": "m",
+      "value": "<re.Match object; span=(0, 70), match=\"'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx>"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "astropy/io/fits/tests/test_header.py:589",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at astropy/io/fits/tests/test_header.py:589 --name reach --timeout 300 --json -- -q -p no:cacheprovider astropy/io/fits/tests/test_header.py::TestHeaderFunctions::test_long_string_value_with_quotes",
+     "exit": 0,
+     "seconds": 1.3
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/astropy/io/fits/tests/test_header.py:589",
+    "function": "test_long_string_value_with_quotes",
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 3,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "c",
+      "value": "('TEST', \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'\", '')"
+     },
+     {
+      "name": "self",
+      "value": "<astropy.io.fits.tests.test_header.TestHeaderFunctions object at 0xffff4a3bb510>"
+     },
+     {
+      "name": "testval",
+      "value": "\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx''\""
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 4
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:49:40+00:00"
+}

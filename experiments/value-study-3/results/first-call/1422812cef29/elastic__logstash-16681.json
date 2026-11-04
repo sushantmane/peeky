@@ -1,0 +1,59 @@
+{
+ "bug": "elastic__logstash-16681",
+ "language": "java",
+ "image": "peeky-study/elastic__logstash-16681:peeky-r3",
+ "image_id": "sha256:2544eabae860a6ebd830476ac937bc763071d6e2fa0fe3ccac9f5067c82fa820",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:00:38+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the first statement the only code hunk changes: reading the address state's input inside mutate's compute lambda, before notifying it",
+   "at": "logstash-core/src/main/java/org/logstash/plugins/pipeline/PipelineBusV2.java:146",
+   "test_command": "./gradlew --no-daemon --offline :logstash-core:javaTests --tests 'org.logstash.plugins.pipeline.PipelineBusTest.blockingShutdownDeadlock*'",
+   "captures": [
+    "address",
+    "consumer",
+    "a",
+    "addressState"
+   ],
+   "command": "peeky probe . --at logstash-core/src/main/java/org/logstash/plugins/pipeline/PipelineBusV2.java:146 --capture address,consumer,a,addressState --timeout 300 --json --test -- ./gradlew --no-daemon --offline :logstash-core:javaTests --tests 'org.logstash.plugins.pipeline.PipelineBusTest.blockingShutdownDeadlock*'",
+   "exit": 0,
+   "seconds": 15.2,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "hits",
+    "hits": 1,
+    "exit_code": null,
+    "seconds": 0.944,
+    "warnings": []
+   },
+   "values": {
+    "read": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "address",
+      "value": "\"fooAddr\""
+     },
+     {
+      "selector": "consumer",
+      "value": "1859631557@2499"
+     },
+     {
+      "selector": "a",
+      "value": "\"fooAddr\""
+     },
+     {
+      "selector": "addressState",
+      "value": "AddressState@2500"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:00:54+00:00"
+}

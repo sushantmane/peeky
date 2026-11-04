@@ -1,0 +1,108 @@
+{
+ "bug": "astropy__astropy-13033",
+ "language": "python",
+ "category": "E",
+ "image": "peeky-study/astropy__astropy-13033:peeky-r3",
+ "image_id": "sha256:2a2449fe5b941e569fc286203bdf30178c98ee4f92305ecec6a473c909bbf6f9",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:49:12+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the raise the second hunk changes, in _check_required_columns (the first hunk only adds a nested helper function)",
+   "at": "astropy/timeseries/core.py:79",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at astropy/timeseries/core.py:79 --name reach --timeout 300 --json -- -q -p no:cacheprovider astropy/timeseries/tests/test_sampled.py::test_required_columns",
+     "exit": 0,
+     "seconds": 1.5
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/astropy/timeseries/core.py:79",
+    "function": "_check_required_columns",
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 3,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "plural",
+      "value": "''"
+     },
+     {
+      "name": "required_columns",
+      "value": "['time']"
+     },
+     {
+      "name": "self",
+      "value": "<TimeSeries length=3>\n  c             time            a     b  \nint64           Time          int64 int64\n----- ----------------------- ----- -----\n    3 2016-0"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "astropy/timeseries/tests/test_sampled.py:369",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at astropy/timeseries/tests/test_sampled.py:369 --name reach --timeout 300 --json -- -q -p no:cacheprovider astropy/timeseries/tests/test_sampled.py::test_required_columns",
+     "exit": 0,
+     "seconds": 1.4
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/astropy/timeseries/tests/test_sampled.py:369",
+    "function": "test_required_columns",
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 2,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "exc",
+      "value": "<ExceptionInfo ValueError(\"TimeSeries object is invalid - expected 'time' as the first column but found 'c'\") tblen=3>"
+     },
+     {
+      "name": "ts",
+      "value": "<TimeSeries length=3>\n          time            a     b  \n          Time          int64 int64\n----------------------- ----- -----\n2016-03-22T12:30:31.000    10 "
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 4
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:49:15+00:00"
+}

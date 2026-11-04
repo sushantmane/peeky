@@ -1,0 +1,66 @@
+{
+ "bug": "elastic__logstash-16094",
+ "language": "java",
+ "image": "peeky-study/elastic__logstash-16094:peeky-r3",
+ "image_id": "sha256:f7fe02bccbaba471e57a6f51f6a34adc4a11cb6577aef91cb2d9bd0d74e2d676",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:00:05+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the statement after the inserted setProperty in the settings post-process block (first code hunk)",
+   "outcome": "not attempted",
+   "detail": {
+    "reason": "Ruby code that runs when Logstash starts: the failing Java test never runs it, and a Java session can't stop in JRuby code"
+   }
+  },
+  {
+   "why": "the changed paramName line in writeStructuredMessage's loop over params (last code hunk)",
+   "at": "logstash-core/src/main/java/org/logstash/log/CustomLogEventSerializer.java:72",
+   "test_command": "./gradlew --no-daemon --offline :logstash-core:javaTests --tests org.logstash.log.CustomLogEventTests.testJSONLayoutWhenParamsContainsAnotherMessageField",
+   "captures": [
+    "message",
+    "generator",
+    "entry",
+    "this"
+   ],
+   "command": "peeky probe . --at logstash-core/src/main/java/org/logstash/log/CustomLogEventSerializer.java:72 --capture message,generator,entry,this --timeout 300 --json --test -- ./gradlew --no-daemon --offline :logstash-core:javaTests --tests org.logstash.log.CustomLogEventTests.testJSONLayoutWhenParamsContainsAnotherMessageField",
+   "exit": 0,
+   "seconds": 9.7,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "hits",
+    "hits": 1,
+    "exit_code": null,
+    "seconds": 0.921,
+    "warnings": []
+   },
+   "values": {
+    "read": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "message",
+      "value": "StructuredMessage@3002"
+     },
+     {
+      "selector": "generator",
+      "value": "WriterBasedJsonGenerator@3003"
+     },
+     {
+      "selector": "entry",
+      "value": "AbstractMap$SimpleImmutableEntry@3004"
+     },
+     {
+      "selector": "this",
+      "value": "CustomLogEventSerializer@3005"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:00:15+00:00"
+}

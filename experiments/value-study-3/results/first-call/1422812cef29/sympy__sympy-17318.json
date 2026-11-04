@@ -1,0 +1,40 @@
+{
+ "bug": "sympy__sympy-17318",
+ "language": "python",
+ "image": "peeky-study/sympy__sympy-17318:peeky-r3",
+ "image_id": "sha256:e686a74f85bdc2b04c98b63fb8ad5a6c33e3bb5c92c5bb6a3d4672730addca91",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:53:49+00:00",
+ "prepare": [
+  {
+   "command": "cp bin/test bin/reach_test.py && ls -l bin/reach_test.py",
+   "exit": 0,
+   "seconds": 0.0,
+   "output": "-rwxr-xr-x 1 root root 4766 Nov  4 07:53 bin/reach_test.py\n"
+  }
+ ],
+ "points": [
+  {
+   "why": "the changed condition in _sqrt_match (the only code hunk; radsimp.py's hunks are docstrings)",
+   "at": "sympy/simplify/sqrtdenest.py:159",
+   "test_command": "python bin/test -C --verbose --no-subprocess sympy/simplify/tests/test_sqrtdenest.py -k test_issue_12420",
+   "captures": [
+    "p",
+    "pargs"
+   ],
+   "command": "peeky probe . --at sympy/simplify/sqrtdenest.py:159 --capture p,pargs --timeout 300 --json --test -- python bin/test -C --verbose --no-subprocess sympy/simplify/tests/test_sqrtdenest.py -k test_issue_12420",
+   "exit": 2,
+   "seconds": 0.1,
+   "outcome": "refused",
+   "detail": {
+    "code": "INVALID_REQUEST",
+    "message": "entry must be a .py file inside the root",
+    "hint": "Fix the request arguments; see `peeky <command> --help`."
+   },
+   "stderr_tail": "peeky: test: python bin/test -C --verbose --no-subprocess sympy/simplify/tests/test_sqrtdenest.py -k test_issue_12420\n",
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:53:50+00:00"
+}

@@ -1,0 +1,96 @@
+{
+ "bug": "tokio-rs__tokio-5179",
+ "language": "rust",
+ "category": "D",
+ "image": "peeky-study/tokio-rs__tokio-5179:peeky-r3",
+ "image_id": "sha256:1643f81d7fa7ce6730b7f88088c4363ca7c038e46cd5c49c0f5f06f20b285579",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:32:33+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed call in context::budget (first code hunk; the line above it is the signature)",
+   "at": "tokio/src/runtime/context.rs:67",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tokio/src/runtime/context.rs:67 --name reach --timeout 300 --json -- --exact store_local_set_in_thread_local_with_runtime --test-threads=1",
+     "exit": 0,
+     "seconds": 33.2
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 2,
+     "seconds": 1.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/tokio/src/runtime/context.rs:67",
+    "function": "tokio::runtime::context::budget::hf660500a013e51eb"
+   },
+   "moved": false,
+   "values": {
+    "error": {
+     "code": "INVALID_REQUEST",
+     "message": "Peeky reads no value of frame 0 (tokio::runtime::context::budget) here: the debugger shows the stop on line 67 of tokio/src/runtime/context.rs, in code another crate's build compiled (a generic or inlined function of `tokio`'s, for that crate's types). Peeky reads only `tokio`'s own build, which holds none of it. A stop where `tokio`'s own code runs it is read",
+     "hint": "Nothing in that frame is read or changed here: `session step` goes on to your code's next line, and `--frame N` reads a caller.",
+     "retryable": false,
+     "session_closed": false
+    }
+   },
+   "leftover_processes": 1
+  },
+  {
+   "role": "gold",
+   "why": "the first statement of the file the fix deletes, in VecDequeCell::with_capacity (last code hunk; the lines above it are imports and declarations)",
+   "at": "tokio/src/util/vec_deque_cell.rs:18",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tokio/src/util/vec_deque_cell.rs:18 --name reach --timeout 300 --json -- --exact store_local_set_in_thread_local_with_runtime --test-threads=1",
+     "exit": 0,
+     "seconds": 23.4
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 8.4
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/tokio/src/util/vec_deque_cell.rs:18",
+    "function": "tokio::util::vec_deque_cell::VecDequeCell$LT$T$GT$::with_capacity::h743203b6406f2795"
+   },
+   "moved": false,
+   "values": {
+    "shown": 1,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "cap",
+      "value": "64"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "outcome": "not attempted",
+   "detail": {
+    "reason": "the test has no assertion: it fails by panicking in a thread-local destructor when its thread exits"
+   }
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:33:40+00:00"
+}

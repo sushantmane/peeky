@@ -1,0 +1,120 @@
+{
+ "bug": "elastic__logstash-15928",
+ "language": "java",
+ "category": "E",
+ "image": "peeky-study/elastic__logstash-15928:peeky-r3",
+ "image_id": "sha256:890106f56f4e748e5c86a2de2f462e88f19eabcc675a4c42456e11bbb6145bf5",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:57:16+00:00",
+ "needs": [],
+ "notes": "One code hunk: the fix's other changes are the parser's build.gradle (Java and JUnit versions) and an import.",
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed println of the final options in handleJvmOptions (the only code hunk)",
+   "at": "tools/jvm-options-parser/src/main/java/org/logstash/launchers/JvmOptionsParser.java:183",
+   "launch": {
+    "ready_seconds": 6.2
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at tools/jvm-options-parser/src/main/java/org/logstash/launchers/JvmOptionsParser.java:183 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 0.5
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/tools/jvm-options-parser/src/main/java/org/logstash/launchers/JvmOptionsParser.java:183",
+    "function": "JvmOptionsParser.handleJvmOptions(Optional,String)"
+   },
+   "moved": false,
+   "values": {
+    "shown": 5,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "jvmOptionsFile",
+      "value": "Optional@1505"
+     },
+     {
+      "name": "lsJavaOpts",
+      "value": "\"-Dcli.opts=something\""
+     },
+     {
+      "name": "javaMajorVersion",
+      "value": "11"
+     },
+     {
+      "name": "jvmOptionsContent",
+      "value": "LinkedHashSet@1507"
+     },
+     {
+      "name": "this",
+      "value": "JvmOptionsParser@1508"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 4
+  },
+  {
+   "role": "assertion",
+   "why": "the first assertion of testNettyMaxOrderRuleAppliesIfNotAlreadyDefinedExplicitlyByUser",
+   "at": "tools/jvm-options-parser/src/test/java/org/logstash/launchers/JvmOptionsParserTest.java:138",
+   "launch": {
+    "ready_seconds": 3.1
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at tools/jvm-options-parser/src/test/java/org/logstash/launchers/JvmOptionsParserTest.java:138 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 0.5
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/tools/jvm-options-parser/src/test/java/org/logstash/launchers/JvmOptionsParserTest.java:138",
+    "function": "JvmOptionsParserTest.testNettyMaxOrderRuleAppliesIfNotAlreadyDefinedExplicitlyByUser()"
+   },
+   "moved": false,
+   "values": {
+    "shown": 3,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "optionsFile",
+      "value": "File@1505"
+     },
+     {
+      "name": "output",
+      "value": "\"-Dsome.other.netty.property=123 -Dcli.opts=something -Djruby.regexp.interruptible=true -Djdk.io.File.enableADS=true --add-opens=java.base/java.security=ALL-UNN"
+     },
+     {
+      "name": "this",
+      "value": "JvmOptionsParserTest@1507"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 8
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:57:32+00:00"
+}

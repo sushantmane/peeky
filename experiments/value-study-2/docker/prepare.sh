@@ -12,7 +12,7 @@
 #   hint alone (rust_config below), so the agent starts with a current build. Git's index of
 #   /testbed is refreshed after it.
 # - Every bug: /opt/peeky/docs/PROJECT.md says what was prepared, and the guide's copy points
-#   to it in one line under its title.
+#   to it in one line under its title (and the first-probe page's, FIRST.md, where Peeky has one).
 #
 # Paths the build adds are listed in .git/info/exclude, so `git status` and the harness's
 # agent.patch leave them out. No tracked file changes, but jq's generated parser and lexer
@@ -218,8 +218,12 @@ EOF
 esac
 fi
 
-# The guide's copy points to PROJECT.md, in one line under its title.
-sed -i '1a\
+# The guide's copy points to PROJECT.md, in one line under its title. So does the first-probe
+# page's (ADR 0009), on a Peeky commit that has one: round 3's prompt starts the agent there.
+for doc in AGENT_GUIDE.md FIRST.md; do
+  [ -f "$DOCS/$doc" ] || continue
+  sed -i '1a\
 \
-**In this container:** [PROJECT.md](PROJECT.md) says what is prepared for Peeky here.' "$DOCS/AGENT_GUIDE.md"
+**In this container:** [PROJECT.md](PROJECT.md) says what is prepared for Peeky here.' "$DOCS/$doc"
+done
 git status --short | head -20

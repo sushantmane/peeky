@@ -1,0 +1,68 @@
+{
+ "bug": "astropy__astropy-8707",
+ "language": "python",
+ "image": "peeky-study/astropy__astropy-8707:peeky-r3",
+ "image_id": "sha256:62c1c1a66b84a487b684a5a5dd2772346ca99da8516ee65661a7fdb4d7bfb256",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:52:16+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the statement after the insertion in Card.fromstring (first code hunk)",
+   "at": "astropy/io/fits/card.py:557",
+   "test_command": "python -m pytest -q -p no:cacheprovider astropy/io/fits/tests/test_header.py::TestHeaderFunctions::test_card_from_bytes",
+   "captures": [
+    "card",
+    "image"
+   ],
+   "command": "peeky probe . --at astropy/io/fits/card.py:557 --capture card,image --timeout 300 --json --test -- python -m pytest -q -p no:cacheprovider astropy/io/fits/tests/test_header.py::TestHeaderFunctions::test_card_from_bytes",
+   "exit": 0,
+   "seconds": 2.6,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "exit",
+    "hits": 1,
+    "exit_code": 1,
+    "seconds": 2.377,
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "values": {
+    "read": 2,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "card",
+      "value": "('', '', '')"
+     },
+     {
+      "selector": "image",
+      "value": "b\"ABC     = 'abc'\""
+     }
+    ]
+   },
+   "leftover_processes": 1
+  },
+  {
+   "why": "the changed append of the last card in Header.fromstring (last code hunk)",
+   "at": "astropy/io/fits/header.py:395",
+   "test_command": "python -m pytest -q -p no:cacheprovider astropy/io/fits/tests/test_header.py::TestHeaderFunctions::test_card_from_bytes",
+   "captures": [],
+   "command": "peeky probe . --at astropy/io/fits/header.py:395 --timeout 300 --json --test -- python -m pytest -q -p no:cacheprovider astropy/io/fits/tests/test_header.py::TestHeaderFunctions::test_card_from_bytes",
+   "exit": 1,
+   "seconds": 2.4,
+   "outcome": "no stop",
+   "detail": {
+    "code": "NO_STOP",
+    "message": "The program failed (exit code 1) without stopping at astropy/io/fits/header.py:395; its output says why",
+    "hint": "The program failed before it reached the line: read its output, and check its arguments (everything after `--`) and input."
+   },
+   "stderr_tail": "peeky: test: python -m pytest -q -p no:cacheprovider astropy/io/fits/tests/test_header.py::TestHeaderFunctions::test_card_from_bytes\npeeky: started; breakpoint astropy/io/fits/header.py:395 verified\npeeky: waiting for the program to reach it...\npeeky: program finished after 0 hit(s)\n",
+   "leftover_processes": 2
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:52:21+00:00"
+}

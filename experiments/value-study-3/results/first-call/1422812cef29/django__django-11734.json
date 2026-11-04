@@ -1,0 +1,95 @@
+{
+ "bug": "django__django-11734",
+ "language": "python",
+ "image": "peeky-study/django__django-11734:peeky-r3",
+ "image_id": "sha256:5eec6e4ef43b23c7a29ddbfb1d56c36c36b93f734257e2bacf9f26f98bc4a0bf",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:52:32+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the removed return of AutoField.get_prep_value (the first hunk; its def line is a signature and the line before is an import)",
+   "at": "django/db/models/fields/__init__.py:2337",
+   "test_command": "python tests/runtests.py --settings=test_sqlite --parallel 1 queries.tests.ExcludeTests.test_subquery_exclude_outerref",
+   "captures": [
+    "self",
+    "value"
+   ],
+   "command": "peeky probe . --at django/db/models/fields/__init__.py:2337 --capture self,value --timeout 300 --json --test -- python tests/runtests.py --settings=test_sqlite --parallel 1 queries.tests.ExcludeTests.test_subquery_exclude_outerref",
+   "exit": 0,
+   "seconds": 2.4,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "exit",
+    "hits": 1,
+    "exit_code": 1,
+    "seconds": 2.182,
+    "warnings": []
+   },
+   "values": {
+    "read": 2,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "self",
+      "value": "<django.db.models.fields.AutoField: id>"
+     },
+     {
+      "selector": "value",
+      "value": "1"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  },
+  {
+   "why": "the changed isinstance(filter_rhs, F) test in Query.split_exclude (the last hunk)",
+   "at": "django/db/models/sql/query.py:1705",
+   "test_command": "python tests/runtests.py --settings=test_sqlite --parallel 1 queries.tests.ExcludeTests.test_subquery_exclude_outerref",
+   "captures": [
+    "can_reuse",
+    "filter_expr",
+    "filter_lhs",
+    "filter_rhs"
+   ],
+   "command": "peeky probe . --at django/db/models/sql/query.py:1705 --capture can_reuse,filter_expr,filter_lhs,filter_rhs --timeout 300 --json --test -- python tests/runtests.py --settings=test_sqlite --parallel 1 queries.tests.ExcludeTests.test_subquery_exclude_outerref",
+   "exit": 0,
+   "seconds": 2.2,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "exit",
+    "hits": 1,
+    "exit_code": 1,
+    "seconds": 1.995,
+    "warnings": []
+   },
+   "values": {
+    "read": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "can_reuse",
+      "value": "{}"
+     },
+     {
+      "selector": "filter_expr",
+      "value": "('jobs', OuterRef(job))"
+     },
+     {
+      "selector": "filter_lhs",
+      "value": "'jobs'"
+     },
+     {
+      "selector": "filter_rhs",
+      "value": "OuterRef(job)"
+     }
+    ]
+   },
+   "leftover_processes": 2
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:52:37+00:00"
+}

@@ -1,8 +1,9 @@
-# Round 3's no-LLM filter: the first pass and the refill
+# Round 3's no-LLM filter: the first pass, the refill and the deciding run
 
 The [README](README.md#the-no-llm-filter) gives the steps and rules. Both passes ran on 2 and 3
-November, with Peeky at `3e51ccd7` (the `main` of those days), before ADR 0009. The deciding reach
-run will be on the final Peeky commit, before screening.
+November, with Peeky at `3e51ccd7` (the `main` of those days), before ADR 0009. The deciding run,
+on the final Peeky commit `1422812c`, is [below](#the-deciding-run-on-1422812c): it kept the same
+50 survivors.
 
 Eight agents built the pool's 68 candidates, and six built the refill's 40, each by a fixed brief,
 with at most 3 Docker builds or containers at once. Each candidate's log row is in
@@ -10,7 +11,162 @@ with at most 3 Docker builds or containers at once. Each candidate's log row is 
 `results/reach/3e51ccd7232d/`. The tables come from `harness/filter_table.py
 results/reach/3e51ccd7232d`, and the survivors from `harness/screen.py survivors`.
 
+## The deciding run on `1422812c`
+
+On 4 November, before any agent run, the Peeky images were built again on `1422812c`, the `main`
+with ADR 0009, and the reach check ran again, by the same rules and the same points. No agent and
+no model.
+
+- **The survivors, and the 3 reached after the refill's end.** Each `peeky-r3` image was rebuilt
+  from its control image, one at a time, with 4 CPUs and 6 GB. Its docs now hold FIRST.md, and
+  FIRST.md, like the guide, points to PROJECT.md in its third line (README, "The main run").
+  Each PROJECT.md says what its image prepared, as on the first pass: the virtual environment
+  (26), JDK 17 for `peeky setup-java` (17), a Peeky build of the C project (5), or the vendored
+  crates and a current Peeky build of its config (5). In every image, the upstream fix solved
+  and an unchanged checkout didn't ([results/image-check/1422812cef29.tsv](results/image-check/1422812cef29.tsv)).
+- **The other 25 that passed steps 1 and 2.** None was reached on `3e51ccd7`, and their images
+  had been removed after the drop. Each control image was built again from its Dockerfile: 8
+  wholly from Docker's build cache, 17 anew, from the same pinned commits. Then its `peeky-r3`
+  image was built, and the reach check ran. Steps 1 and 2 weren't run again, since none was
+  reached. As on the first pass, fastjson2-1245's Peeky image fails its Java check: the project
+  runs on JDK 8, where Peeky launches nothing, but the attach that the reach check uses works.
+- **Not run again:** the candidates dropped because the failing test can't build at base, or
+  because the fix has no gold point. Nothing can reach them.
+- Records: `results/reach/1422812cef29/`. The tables come from `harness/deciding_table.py
+  results/reach/1422812cef29 results/first-call/1422812cef29 results/image-check/1422812cef29.tsv`.
+
+| Language | Rerun | Reached on `3e51ccd7` | Reached on `1422812c` | Survivors | Read in one `--test` call |
+| --- | --- | --- | --- | --- | --- |
+| Python | 27 | 26 | 26 | 25 | 21 |
+| Java | 22 | 17 | 17 | 15 | 14 |
+| C | 10 | 5 | 5 | 5 | 5 |
+| C++ | 4 | 0 | 0 | 0 | 0 |
+| Rust | 15 | 5 | 5 | 5 | 5 |
+| **All** | **78** | **53** | **53** | **50** | **45** |
+
+**The same 50 survive.** All 196 points of the 78 candidates, gold points and assertions, ended
+as on `3e51ccd7`: the same outcome, the same error code where refused, and the same number of
+values read. Peeky's changes since `3e51ccd7` are ADR 0009's: `--test`, FIRST.md, refusals that
+name the next step, and Java configs that may give a path inside the root as an absolute path.
+All the reach gaps of the first pass are still open (#483, #495 to #504). So the survivors are
+Python 25, Java 15, C 5, C++ 0 and Rust 5, and [candidates/survivors.txt](candidates/survivors.txt)
+is unchanged.
+
+### One `--test` call
+
+Each gold point also got one `peeky probe … --test -- <test command>`, the first question as
+FIRST.md asks it ([harness/first_call.py](harness/first_call.py); README, "The no-LLM filter").
+It decides nothing. **45 of the 50 survivors read a value at a fix line in one call**: Python 21
+of 25, Java 14 of 15, C 5 of 5 and Rust 5 of 5. Of the 3 reached after the refill's end, 2 did.
+Of the 78 gold points tried (logstash-16094's Ruby point is not attempted), 69 ended as in the
+session check: a stop where it stopped, and a value read where it read one. The other 9, in 6
+candidates, were refused for the test command alone:
+
+- **sympy-17318, -21596 and -22080:** `python bin/test …` is refused, "entry must be a .py file
+  inside the root", with no next step: sympy's test script has no `.py` suffix. Filed as #509.
+  The reach check copies it to `bin/reach_test.py`, a correction the first pass's rulings
+  allowed.
+- **pytest-10356:** pytest's own checkout. `python -m pytest` there would import its sources, not
+  an installed pytest, and Peeky refuses, "Rename it, or use --run". The reach check runs
+  `--run src/pytest/__main__.py`, as that message says.
+- **lombok-3215, and lombok-3674 (after the end):** Lombok's tests run under Ant, which `--test`
+  refuses by design: Ant forks its test JVMs with no switch Peeky can add its agent to. The reach
+  check edits the Ant target to start the test JVM waiting for a debugger, and attaches.
+
+The test command is the gold point's run, written as FIRST.md writes test commands: `python -m
+pytest ARGS`; the project's own script, `python tests/runtests.py ARGS` (Django) or `python
+bin/test ARGS` (sympy); the Maven or Gradle command of the reach check's `launch`, less its
+debug switch; `cargo test -p PKG --test T [--features F] FILTER -- ARGS`, or `cargo run --bin rg
+-- ARGS` (ripgrep, whose reach check runs the binary); and a C binary with its arguments. The
+captures are the names the session check read at that point. Records:
+`results/first-call/1422812cef29/`.
+
+### Every candidate the deciding run checked
+
+| Candidate | Language | `3e51ccd7` | `1422812c` | Image check | Result | One `--test` call |
+| --- | --- | --- | --- | --- | --- | --- |
+| astropy__astropy-14598 | Python | reached, 10 values | reached, 10 values | gold solved, noop not solved | **survives** | read 4 of 4 |
+| django__django-11820 | Python | reached, 9 values | reached, 9 values | gold solved, noop not solved | **survives** | read 4 of 4 |
+| matplotlib__matplotlib-23476 | Python | reached, 2 values | reached, 2 values | gold solved, noop not solved | **survives** | read 2 of 2 |
+| sympy__sympy-17318 | Python | reached, 2 values | reached, 2 values | gold solved, noop not solved | **survives** | refused (INVALID_REQUEST) |
+| pylint-dev__pylint-8898 | Python | reached, 2 values | reached, 2 values | gold solved, noop not solved | **survives** | read 2 of 2 |
+| pytest-dev__pytest-10356 | Python | reached, 0 values; reached, 1 values | reached, 0 values; reached, 1 values | gold solved, noop not solved | **survives** | refused (INVALID_REQUEST); refused (INVALID_REQUEST) |
+| astropy__astropy-8707 | Python | reached, 2 values; no stop | reached, 2 values; no stop | gold solved, noop not solved | **survives** | read 2 of 2; no stop |
+| django__django-12325 | Python | reached, 20 values; reached, 3 values | reached, 20 values; reached, 3 values | gold solved, noop not solved | **survives** | read 4 of 4; read 3 of 3 |
+| matplotlib__matplotlib-26208 | Python | reached, 2 values; no stop | reached, 2 values; no stop | gold solved, noop not solved | **survives** | read 2 of 2; no stop |
+| astropy__astropy-13977 | Python | reached, 5 values | reached, 5 values | gold solved, noop not solved | **survives** | read 4 of 4 |
+| django__django-13195 | Python | reached, 3 values; reached, 4 values | reached, 3 values; reached, 4 values | gold solved, noop not solved | **survives** | read 3 of 3; read 4 of 4 |
+| matplotlib__matplotlib-24870 | Python | reached, 2 values; no stop | reached, 2 values; no stop | gold solved, noop not solved | **survives** | read 2 of 2; no stop |
+| sphinx-doc__sphinx-10435 | Python | reached, 5 values | reached, 5 values | gold solved, noop not solved | **survives** | read 4 of 4 |
+| astropy__astropy-13236 | Python | reached, 9 values | reached, 9 values | gold solved, noop not solved | **survives** | read 4 of 4 |
+| astropy__astropy-8872 | Python | reached, 7 values; reached, 8 values | reached, 7 values; reached, 8 values | gold solved, noop not solved | **survives** | read 4 of 4; read 4 of 4 |
+| django__django-11400 | Python | reached, 4 values; reached, 4 values | reached, 4 values; reached, 4 values | gold solved, noop not solved | **survives** | read 4 of 4; read 4 of 4 |
+| fasterxml__jackson-databind-4087 | Java | reached, 2 values | reached, 2 values | gold solved, noop not solved | **survives** | read 2 of 2 |
+| alibaba__fastjson2-1245 | Java | no stop | no stop | — | dropped | — |
+| elastic__logstash-16579 | Java | reached, 4 values; no stop | reached, 4 values; no stop | gold solved, noop not solved | **survives** | read 4 of 4; no stop |
+| fasterxml__jackson-databind-3716 | Java | reached, 4 values | reached, 4 values | gold solved, noop not solved | **survives** | read 4 of 4 |
+| elastic__logstash-16094 | Java | not attempted; reached, 4 values | not attempted; reached, 4 values | gold solved, noop not solved | **survives** | not attempted; read 4 of 4 |
+| elastic__logstash-15928 | Java | reached, 5 values | reached, 5 values | gold solved, noop not solved | **survives** | read 4 of 4 |
+| fasterxml__jackson-databind-3666 | Java | no stop; reached, 4 values | no stop; reached, 4 values | gold solved, noop not solved | **survives** | no stop; read 4 of 4 |
+| fasterxml__jackson-databind-3509 | Java | reached, 3 values; no stop | reached, 3 values; no stop | gold solved, noop not solved | **survives** | read 3 of 3; no stop |
+| alibaba__fastjson2-82 | Java | reached, 1 values; reached, 1 values | reached, 1 values; reached, 1 values | gold solved, noop not solved | **survives** | read 1 of 1; read 1 of 1 |
+| projectlombok__lombok-3215 | Java | no stop; reached, 4 values | no stop; reached, 4 values | gold solved, noop not solved | **survives** | refused (UNSUPPORTED); refused (UNSUPPORTED) |
+| apache__dubbo-7041 | Java | reached, 4 values | reached, 4 values | gold solved, noop not solved | **survives** | read 4 of 4 |
+| ponylang__ponyc-3763 | C | reached, 0 values | reached, 0 values | — | dropped | — |
+| facebook__zstd-836 | C | reached, 0 values; reached, 0 values | reached, 0 values; reached, 0 values | — | dropped | — |
+| jqlang__jq-2840 | C | reached, 8 values | reached, 8 values | gold solved, noop not solved | **survives** | read 4 of 4 |
+| ponylang__ponyc-4583 | C | reached, 1 values; reached, 3 values | reached, 1 values; reached, 3 values | gold solved, noop not solved | **survives** | read 1 of 1; read 3 of 3 |
+| facebook__zstd-1530 | C | no stop; no stop | no stop; no stop | — | dropped | — |
+| ponylang__ponyc-3777 | C | refused (UNSUPPORTED) | refused (UNSUPPORTED) | — | dropped | — |
+| ponylang__ponyc-4057 | C | reached, 18 values | reached, 18 values | gold solved, noop not solved | **survives** | read 4 of 4 |
+| nlohmann__json-2866 | C++ | refused (UNSUPPORTED); refused (UNSUPPORTED) | refused (UNSUPPORTED); refused (UNSUPPORTED) | — | dropped | — |
+| fmtlib__fmt-1390 | C++ | refused (INVALID_BREAKPOINT) | refused (INVALID_BREAKPOINT) | — | dropped | — |
+| catchorg__Catch2-2723 | C++ | refused (UNSUPPORTED); refused (UNSUPPORTED) | refused (UNSUPPORTED); refused (UNSUPPORTED) | — | dropped | — |
+| fmtlib__fmt-3260 | C++ | refused (UNSUPPORTED); refused (UNSUPPORTED) | refused (UNSUPPORTED); refused (UNSUPPORTED) | — | dropped | — |
+| nushell__nushell-10629 | Rust | refused (UNSUPPORTED) | refused (UNSUPPORTED) | — | dropped | — |
+| BurntSushi__ripgrep-2295 | Rust | reached, 5 values | reached, 5 values | gold solved, noop not solved | **survives** | read 4 of 4 |
+| clap-rs__clap-2161 | Rust | refused (BUILD_FAILED); refused (BUILD_FAILED) | refused (BUILD_FAILED); refused (BUILD_FAILED) | — | dropped | — |
+| clap-rs__clap-2696 | Rust | refused (BUILD_FAILED) | refused (BUILD_FAILED) | — | dropped | — |
+| clap-rs__clap-3391 | Rust | refused (BUILD_FAILED); refused (BUILD_FAILED) | refused (BUILD_FAILED); refused (BUILD_FAILED) | — | dropped | — |
+| clap-rs__clap-5873 | Rust | reached, 7 values | reached, 7 values | gold solved, noop not solved | **survives** | read 3 of 4 |
+| tokio-rs__tokio-5179 | Rust | reached, 0 values; reached, 1 values | reached, 0 values; reached, 1 values | gold solved, noop not solved | **survives** | stopped, none read; read 1 of 1 |
+| nushell__nushell-11292 | Rust | refused (UNSUPPORTED); refused (UNSUPPORTED) | refused (UNSUPPORTED); refused (UNSUPPORTED) | — | dropped | — |
+| clap-rs__clap-4005 | Rust | reached, 6 values | reached, 6 values | gold solved, noop not solved | **survives** | read 3 of 4 |
+| BurntSushi__ripgrep-2576 | Rust | reached, 5 values | reached, 5 values | gold solved, noop not solved | **survives** | read 3 of 4 |
+| matplotlib__matplotlib-23299 | Python | reached, 2 values | reached, 2 values | gold solved, noop not solved | **survives** | read 2 of 2 |
+| fasterxml__jackson-core-1016 | Java | no stop; no stop | no stop; no stop | — | dropped | — |
+| django__django-11734 | Python | reached, 2 values; reached, 6 values | reached, 2 values; reached, 6 values | gold solved, noop not solved | **survives** | read 2 of 2; read 4 of 4 |
+| mockito__mockito-3173 | Java | reached, 5 values; reached, 2 values | reached, 5 values; reached, 2 values | gold solved, noop not solved | **survives** | read 4 of 4; read 2 of 2 |
+| facebook__zstd-2130 | C | reached, 4 values; reached, 16 values | reached, 4 values; reached, 16 values | gold solved, noop not solved | **survives** | read 4 of 4; read 4 of 4 |
+| nushell__nushell-13870 | Rust | refused (UNSUPPORTED); refused (UNSUPPORTED) | refused (UNSUPPORTED); refused (UNSUPPORTED) | — | dropped | — |
+| elastic__logstash-16681 | Java | reached, 4 values | reached, 4 values | gold solved, noop not solved | **survives** | read 4 of 4 |
+| sympy__sympy-22080 | Python | reached, 11 values | reached, 11 values | gold solved, noop not solved | **survives** | refused (INVALID_REQUEST) |
+| ponylang__ponyc-4017 | C | reached, 5 values | reached, 5 values | gold solved, noop not solved | **survives** | read 4 of 4 |
+| tokio-rs__tracing-2001 | Rust | reached, 0 values; refused (INVALID_BREAKPOINT) | reached, 0 values; refused (INVALID_BREAKPOINT) | — | dropped | — |
+| scikit-learn__scikit-learn-26194 | Python | reached, 9 values | reached, 9 values | gold solved, noop not solved | **survives** | read 4 of 4 |
+| apache__druid-14092 | Java | no stop; reached, 5 values | no stop; reached, 5 values | gold solved, noop not solved | **survives** | no stop; read 4 of 4 |
+| sphinx-doc__sphinx-7462 | Python | reached, 1 values; reached, 1 values | reached, 1 values; reached, 1 values | gold solved, noop not solved | **survives** | read 1 of 1; read 1 of 1 |
+| apache__dubbo-10638 | Java | no stop; reached, 2 values | no stop; reached, 2 values | gold solved, noop not solved | **survives** | no stop; read 2 of 2 |
+| matplotlib__matplotlib-21568 | Python | reached, 3 values | reached, 3 values | gold solved, noop not solved | **survives** | read 3 of 3 |
+| django__django-14170 | Python | no stop; reached, 4 values | no stop; reached, 4 values | gold solved, noop not solved | **survives** | no stop; read 4 of 4 |
+| ponylang__ponyc-4067 | C | refused (UNSUPPORTED) | refused (UNSUPPORTED) | — | dropped | — |
+| BurntSushi__ripgrep-1294 | Rust | refused (UNSUPPORTED); refused (UNSUPPORTED) | refused (UNSUPPORTED); refused (UNSUPPORTED) | — | dropped | — |
+| astropy__astropy-13033 | Python | reached, 3 values | reached, 3 values | gold solved, noop not solved | **survives** | read 3 of 3 |
+| fasterxml__jackson-databind-3851 | Java | reached, 3 values | reached, 3 values | gold solved, noop not solved | **survives** | read 3 of 3 |
+| sympy__sympy-21596 | Python | reached, 12 values | reached, 12 values | gold solved, noop not solved | **survives** | refused (INVALID_REQUEST) |
+| alibaba__fastjson2-2285 | Java | refused (INVALID_REQUEST) | refused (INVALID_REQUEST) | — | dropped | — |
+| clap-rs__clap-2085 | Rust | refused (BUILD_FAILED) | refused (BUILD_FAILED) | — | dropped | — |
+| google__gson-1100 | Java | no stop; reached, 2 values | no stop; reached, 2 values | gold solved, noop not solved | reached, after the refill's end | — |
+| projectlombok__lombok-3674 | Java | no stop; reached, 5 values | no stop; reached, 5 values | gold solved, noop not solved | reached, after the refill's end | — |
+| clap-rs__clap-2882 | Rust | refused (UNSUPPORTED); refused (UNSUPPORTED) | refused (UNSUPPORTED); refused (UNSUPPORTED) | — | dropped | — |
+| sympy__sympy-16597 | Python | no stop; no stop | no stop; no stop | — | dropped | — |
+| fasterxml__jackson-databind-4048 | Java | refused (INVALID_BREAKPOINT) | refused (INVALID_BREAKPOINT) | — | dropped | — |
+| sphinx-doc__sphinx-7590 | Python | no stop; reached, 1 values | no stop; reached, 1 values | gold solved, noop not solved | reached, after the refill's end | — |
+| google__gson-1703 | Java | refused (INVALID_REQUEST) | refused (INVALID_REQUEST) | — | dropped | — |
+
 ## Counts after each step
+
+On `3e51ccd7`, the first pass and the refill.
 
 | Language | Pool: examined | Step 1 | Step 2 | Reached | Refill: examined | Step 1 | Step 2 | Reached | Counted | Survivors |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -131,6 +287,8 @@ Each is in the bug's bug.yaml. None touches the fix or the hidden tests.
   tests. Each bug.yaml says how many.
 
 ## Survivors
+
+The first pass's and the refill's, and the deciding run's on `1422812c`: the same 50.
 
 | Language | The pool | The refill |
 | --- | --- | --- |

@@ -1,0 +1,51 @@
+{
+ "bug": "pylint-dev__pylint-8898",
+ "language": "python",
+ "image": "peeky-study/pylint-dev__pylint-8898:peeky-r3",
+ "image_id": "sha256:cc4e35b387337562f485c6e50445aab415d37350d9d492295e39c3dfb048c673",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:53:15+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the changed loop header in _regexp_csv_transfomer (the only hunk changing a statement; utils/__init__.py's hunks are imports and __all__, utils.py's add an import and a new function between functions)",
+   "at": "pylint/config/argument.py:117",
+   "test_command": "python -m pytest -q -p no:cacheprovider tests/config/test_config.py::test_csv_regex_error",
+   "captures": [
+    "patterns",
+    "value"
+   ],
+   "command": "peeky probe . --at pylint/config/argument.py:117 --capture patterns,value --timeout 300 --json --test -- python -m pytest -q -p no:cacheprovider tests/config/test_config.py::test_csv_regex_error",
+   "exit": 0,
+   "seconds": 2.0,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "exit",
+    "hits": 1,
+    "exit_code": 1,
+    "seconds": 1.815,
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "values": {
+    "read": 2,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "patterns",
+      "value": "[]"
+     },
+     {
+      "selector": "value",
+      "value": "''"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:53:18+00:00"
+}

@@ -1,0 +1,63 @@
+{
+ "bug": "sphinx-doc__sphinx-7590",
+ "language": "python",
+ "image": "peeky-study/sphinx-doc__sphinx-7590:peeky-r3",
+ "image_id": "sha256:debfae7b78d99cbf389e1014813de58b23b2f28ddea3e26e5e565462961bff4a",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:35:31+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the first code hunk (c.py's first hunk only changes imports): the literal loop in the C domain's _parse_literal; no failing test runs it, so it uses the first failing test",
+   "at": "sphinx/domains/c.py:2079",
+   "test_command": "python -m pytest -q -p no:cacheprovider tests/test_domain_cpp.py::test_expressions",
+   "captures": [],
+   "command": "peeky probe . --at sphinx/domains/c.py:2079 --timeout 300 --json --test -- python -m pytest -q -p no:cacheprovider tests/test_domain_cpp.py::test_expressions",
+   "exit": 1,
+   "seconds": 1.7,
+   "outcome": "no stop",
+   "detail": {
+    "code": "NO_STOP",
+    "message": "The program failed (exit code 1) without stopping at sphinx/domains/c.py:2079; its output says why",
+    "hint": "The program failed before it reached the line: read its output, and check its arguments (everything after `--`) and input."
+   },
+   "stderr_tail": "peeky: test: python -m pytest -q -p no:cacheprovider tests/test_domain_cpp.py::test_expressions\npeeky: started; breakpoint sphinx/domains/c.py:2079 verified\npeeky: waiting for the program to reach it...\npeeky: program finished after 0 hit(s)\n",
+   "leftover_processes": 1
+  },
+  {
+   "why": "the last code hunk: the mode check in verify_description_mode",
+   "at": "sphinx/util/cfamily.py:72",
+   "test_command": "python -m pytest -q -p no:cacheprovider tests/test_domain_cpp.py::test_expressions",
+   "captures": [
+    "mode"
+   ],
+   "command": "peeky probe . --at sphinx/util/cfamily.py:72 --capture mode --timeout 300 --json --test -- python -m pytest -q -p no:cacheprovider tests/test_domain_cpp.py::test_expressions",
+   "exit": 0,
+   "seconds": 1.9,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "exit",
+    "hits": 1,
+    "exit_code": 1,
+    "seconds": 1.762,
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "values": {
+    "read": 1,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "mode",
+      "value": "'lastIsName'"
+     }
+    ]
+   },
+   "leftover_processes": 2
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:35:35+00:00"
+}

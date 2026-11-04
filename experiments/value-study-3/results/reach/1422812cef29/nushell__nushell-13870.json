@@ -1,0 +1,83 @@
+{
+ "bug": "nushell__nushell-13870",
+ "language": "rust",
+ "category": "D",
+ "image": "peeky-study/nushell__nushell-13870:peeky-r3",
+ "image_id": "sha256:f6907619fd2991e47b349e3c7240d0919791d46fd398884e832bd65365dd7903",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:56:50+00:00",
+ "needs": [],
+ "notes": "The failing test runs the nu binary (nu! spawns target/debug/nu with --no-config-file --no-std-lib --error-style plain and one '-c <quoted commands>' argument, cwd /testbed, target/debug first on PATH); the gold points run that program with the test's first command. The prepare step puts the image's target/debug/nu on PATH, as the test does, for the inner `nu --testbin`.",
+ "prepare": [
+  {
+   "command": "ln -sf /testbed/target/debug/nu /usr/local/bin/nu && command -v nu",
+   "exit": 0,
+   "seconds": 0.0,
+   "output": "/usr/local/bin/nu\n"
+  }
+ ],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed Child match arm in describe's run (first code hunk; no failing test runs describe, so it runs the first failing test's program)",
+   "at": "crates/nu-cmd-lang/src/core_commands/describe.rs:172",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/cmd-lang.json --build --at crates/nu-cmd-lang/src/core_commands/describe.rs:172 --name reach --timeout 300 --json -- --no-config-file --no-std-lib --error-style plain '-c \"foo=bar nu --testbin echo_env_stderr_fail foo | detect columns\"'",
+     "exit": 2,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "UNSUPPORTED",
+    "message": "Peeky doesn't build a workspace with [patch] (in /testbed/Cargo.toml): Cargo would build other sources than Cargo.lock names. Remove it, or make the patched crate a path dependency inside the workspace",
+    "hint": "Nothing was built. Change what the message names in the workspace or its configuration, or analyse another package.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "gold",
+   "why": "the exit-status check in ChildProcess::into_bytes that the fix makes conditional (last code hunk; the hunk above changes only the signature)",
+   "at": "crates/nu-protocol/src/process/child.rs:185",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/protocol.json --build --at crates/nu-protocol/src/process/child.rs:185 --name reach --timeout 300 --json -- --no-config-file --no-std-lib --error-style plain '-c \"foo=bar nu --testbin echo_env_stderr_fail foo | detect columns\"'",
+     "exit": 2,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "UNSUPPORTED",
+    "message": "Peeky doesn't build a workspace with [patch] (in /testbed/Cargo.toml): Cargo would build other sources than Cargo.lock names. Remove it, or make the patched crate a path dependency inside the workspace",
+    "hint": "Nothing was built. Change what the message names in the workspace or its configuration, or analyse another package.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "tests/shell/pipeline/commands/external.rs:647",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tests/shell/pipeline/commands/external.rs:647 --name reach --timeout 300 --json -- --exact shell::pipeline::commands::external::collecting_failed_command_result_dont_raise_error --test-threads=1",
+     "exit": 2,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "UNSUPPORTED",
+    "message": "Peeky doesn't build a workspace with [patch] (in /testbed/Cargo.toml): Cargo would build other sources than Cargo.lock names. Remove it, or make the patched crate a path dependency inside the workspace",
+    "hint": "Nothing was built. Change what the message names in the workspace or its configuration, or analyse another package.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:56:52+00:00"
+}

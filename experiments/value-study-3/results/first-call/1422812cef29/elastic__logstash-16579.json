@@ -1,0 +1,76 @@
+{
+ "bug": "elastic__logstash-16579",
+ "language": "java",
+ "image": "peeky-study/elastic__logstash-16579:peeky-r3",
+ "image_id": "sha256:ba51ef65a10dfb1447f55cd713c4e7f131232a77753d8080d97f2912eedb25af",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:00:15+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the first line the extract hunk changes: the size of the incoming first segment, in the size-limit check",
+   "at": "logstash-core/src/main/java/org/logstash/common/BufferedTokenizerExt.java:81",
+   "test_command": "./gradlew --no-daemon --offline :logstash-core:javaTests --tests org.logstash.common.BufferedTokenizerExtWithSizeLimitTest.giveMultipleSegmentsThatGeneratesMultipleBufferFullErrorsThenIsAbleToRecoverTokenization",
+   "captures": [
+    "context",
+    "data",
+    "entities",
+    "this"
+   ],
+   "command": "peeky probe . --at logstash-core/src/main/java/org/logstash/common/BufferedTokenizerExt.java:81 --capture context,data,entities,this --timeout 300 --json --test -- ./gradlew --no-daemon --offline :logstash-core:javaTests --tests org.logstash.common.BufferedTokenizerExtWithSizeLimitTest.giveMultipleSegmentsThatGeneratesMultipleBufferFullErrorsThenIsAbleToRecoverTokenization",
+   "exit": 0,
+   "seconds": 11.9,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "hits",
+    "hits": 1,
+    "exit_code": null,
+    "seconds": 2.839,
+    "warnings": []
+   },
+   "values": {
+    "read": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "context",
+      "value": "ThreadContext@8388"
+     },
+     {
+      "selector": "data",
+      "value": "RubyString@8389"
+     },
+     {
+      "selector": "entities",
+      "value": "RubyArray@8390"
+     },
+     {
+      "selector": "this",
+      "value": "BufferedTokenizerExt@8391"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  },
+  {
+   "why": "the first line the last code hunk changes: flush's join of the accumulated input",
+   "at": "logstash-core/src/main/java/org/logstash/common/BufferedTokenizerExt.java:107",
+   "test_command": "./gradlew --no-daemon --offline :logstash-core:javaTests --tests org.logstash.common.BufferedTokenizerExtWithSizeLimitTest.giveMultipleSegmentsThatGeneratesMultipleBufferFullErrorsThenIsAbleToRecoverTokenization",
+   "captures": [],
+   "command": "peeky probe . --at logstash-core/src/main/java/org/logstash/common/BufferedTokenizerExt.java:107 --timeout 300 --json --test -- ./gradlew --no-daemon --offline :logstash-core:javaTests --tests org.logstash.common.BufferedTokenizerExtWithSizeLimitTest.giveMultipleSegmentsThatGeneratesMultipleBufferFullErrorsThenIsAbleToRecoverTokenization",
+   "exit": 1,
+   "seconds": 10.7,
+   "outcome": "no stop",
+   "detail": {
+    "code": "NO_STOP",
+    "message": "The program finished without stopping at logstash-core/src/main/java/org/logstash/common/BufferedTokenizerExt.java:107; check `peeky describe` for executable lines",
+    "hint": "Pick a line the program executes; see `peeky describe`."
+   },
+   "stderr_tail": "peeky: test: ./gradlew --no-daemon --offline :logstash-core:javaTests --tests org.logstash.common.BufferedTokenizerExtWithSizeLimitTest.giveMultipleSegmentsThatGeneratesMultipleBufferFullErrorsThenIsAbleToRecoverTokenization\npeeky: started gradle; its output goes to /root/.peeky/tests/java-test-31e79536ad93.log\npeeky: the test JVM started; waiting for its debug agent\npeeky: the test JVM (pid 403) waits on port 60185; attaching\npeeky: started; breakpoint logstash-core/src/main/java/org/logstash/common/BufferedTokenizerExt.java:107 pending until its class or module loads\npeeky: waiting for the program to reach it...\npeeky: breakpoint verified\npeeky: program finished after 0 hit(s)\n",
+   "leftover_processes": 2
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:00:38+00:00"
+}

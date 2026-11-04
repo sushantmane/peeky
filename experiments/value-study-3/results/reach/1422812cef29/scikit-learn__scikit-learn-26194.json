@@ -1,0 +1,132 @@
+{
+ "bug": "scikit-learn__scikit-learn-26194",
+ "language": "python",
+ "category": "E",
+ "image": "peeky-study/scikit-learn__scikit-learn-26194:peeky-r3",
+ "image_id": "sha256:a7de5d05758eeb8e432f3e2e1ad4f9f6400bc1a90f9145778b7289f7a4624533",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:52:58+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the only code hunk (the others change roc_curve's docstring): the extra threshold, thresholds[0] + 1",
+   "at": "sklearn/metrics/_ranking.py:1086",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at sklearn/metrics/_ranking.py:1086 --name reach --timeout 300 --json -- -q -p no:cacheprovider sklearn/metrics/tests/test_ranking.py::test_roc_curve_drop_intermediate",
+     "exit": 0,
+     "seconds": 1.3
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/sklearn/metrics/_ranking.py:1086",
+    "function": "roc_curve",
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 9,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "drop_intermediate",
+      "value": "True"
+     },
+     {
+      "name": "fps",
+      "value": "array([0., 0., 0., 4.])"
+     },
+     {
+      "name": "optimal_idxs",
+      "value": "array([0, 1, 5])"
+     },
+     {
+      "name": "pos_label",
+      "value": "None"
+     },
+     {
+      "name": "sample_weight",
+      "value": "None"
+     },
+     {
+      "name": "thresholds",
+      "value": "array([1. , 0.7, 0. ])"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "sklearn/metrics/tests/test_ranking.py:421",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at sklearn/metrics/tests/test_ranking.py:421 --name reach --timeout 300 --json -- -q -p no:cacheprovider sklearn/metrics/tests/test_ranking.py::test_roc_curve_drop_intermediate",
+     "exit": 0,
+     "seconds": 1.4
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/sklearn/metrics/tests/test_ranking.py:421",
+    "function": "test_roc_curve_drop_intermediate",
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 5,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "fpr",
+      "value": "array([0. , 0.5, 1. , 1. ])"
+     },
+     {
+      "name": "thresholds",
+      "value": "array([2. , 1. , 0.7, 0. ])"
+     },
+     {
+      "name": "tpr",
+      "value": "array([0., 0., 0., 1.])"
+     },
+     {
+      "name": "y_score",
+      "value": "[0.0, 0.2, 0.5, 0.6, 0.7, 1.0]"
+     },
+     {
+      "name": "y_true",
+      "value": "[0, 0, 0, 0, 1, 1]"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 4
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:53:02+00:00"
+}

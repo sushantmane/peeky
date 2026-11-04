@@ -1,0 +1,75 @@
+{
+ "bug": "alibaba__fastjson2-82",
+ "language": "java",
+ "image": "peeky-study/alibaba__fastjson2-82:peeky-r3",
+ "image_id": "sha256:3ab72f40445769123ff259bb07a9db8c5e1dcd5e068e62dccb977370bd129d47",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:58:51+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the statement after the inserted check in isValid(String) (first hunk)",
+   "at": "core/src/main/java/com/alibaba/fastjson2/JSON.java:602",
+   "test_command": "./mvnw -B -o --no-transfer-progress -pl core test -Dsurefire.useFile=false -Dtest=Issue81",
+   "captures": [
+    "text"
+   ],
+   "command": "peeky probe . --at core/src/main/java/com/alibaba/fastjson2/JSON.java:602 --capture text --timeout 300 --json --test -- ./mvnw -B -o --no-transfer-progress -pl core test -Dsurefire.useFile=false -Dtest=Issue81",
+   "exit": 0,
+   "seconds": 7.7,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "hits",
+    "hits": 1,
+    "exit_code": null,
+    "seconds": 0.49,
+    "warnings": []
+   },
+   "values": {
+    "read": 1,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "text",
+      "value": "\"[{\"a\":1}]\""
+     }
+    ]
+   },
+   "leftover_processes": 0
+  },
+  {
+   "why": "the statement after the inserted check in isValidArray(String) (last hunk)",
+   "at": "core/src/main/java/com/alibaba/fastjson2/JSON.java:621",
+   "test_command": "./mvnw -B -o --no-transfer-progress -pl core test -Dsurefire.useFile=false -Dtest=Issue81",
+   "captures": [
+    "text"
+   ],
+   "command": "peeky probe . --at core/src/main/java/com/alibaba/fastjson2/JSON.java:621 --capture text --timeout 300 --json --test -- ./mvnw -B -o --no-transfer-progress -pl core test -Dsurefire.useFile=false -Dtest=Issue81",
+   "exit": 0,
+   "seconds": 8.1,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "hits",
+    "hits": 1,
+    "exit_code": null,
+    "seconds": 0.49,
+    "warnings": []
+   },
+   "values": {
+    "read": 1,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "text",
+      "value": "\"{\"a\":1}\""
+     }
+    ]
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:59:08+00:00"
+}

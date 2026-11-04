@@ -1,0 +1,49 @@
+{
+ "bug": "fasterxml__jackson-databind-4087",
+ "language": "java",
+ "image": "peeky-study/fasterxml__jackson-databind-4087:peeky-r3",
+ "image_id": "sha256:626ada4c8e8f259539c0a845582444bb574682b6bffd4c90b3606c85ff38d390",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:03:51+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the statement after the inserted Optional branch in checkUnsupportedType (the only hunk that changes an executable statement; the others add new methods and comments)",
+   "at": "src/main/java/com/fasterxml/jackson/databind/util/BeanUtil.java:313",
+   "test_command": "mvn test -B -o '-Dtest=com.fasterxml.jackson.databind.interop.OptionalJava8Fallbacks4082Test#testPreventSerialization'",
+   "captures": [
+    "type",
+    "className"
+   ],
+   "command": "peeky probe . --at src/main/java/com/fasterxml/jackson/databind/util/BeanUtil.java:313 --capture type,className --timeout 300 --json --test -- mvn test -B -o '-Dtest=com.fasterxml.jackson.databind.interop.OptionalJava8Fallbacks4082Test#testPreventSerialization'",
+   "exit": 0,
+   "seconds": 9.2,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "hits",
+    "hits": 1,
+    "exit_code": null,
+    "seconds": 0.658,
+    "warnings": []
+   },
+   "values": {
+    "read": 2,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "type",
+      "value": "SimpleType@1390"
+     },
+     {
+      "selector": "className",
+      "value": "\"java.util.Optional\""
+     }
+    ]
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:04:00+00:00"
+}

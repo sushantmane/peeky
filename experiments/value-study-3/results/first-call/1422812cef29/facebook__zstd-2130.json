@@ -1,0 +1,116 @@
+{
+ "bug": "facebook__zstd-2130",
+ "language": "c",
+ "image": "peeky-study/facebook__zstd-2130:peeky-r3",
+ "image_id": "sha256:f1f672c20a47597b5c0ce9aaa0d4f48964f285afd28774adf21d08ea85252447",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:21:04+00:00",
+ "prepare": [
+  {
+   "command": "CFLAGS=-O0 LDFLAGS=-Wl,--build-id=sha1 make -C tests fuzzer CC=clang-18 MOREFLAGS='-g -gdwarf-5 -grecord-command-line -fdebug-macro' > /root/reach/rebuild.log 2>&1; tail -3 /root/reach/rebuild.log",
+   "exit": 0,
+   "seconds": 0.6,
+   "output": "make: Entering directory '/testbed/tests'\nclang-18 -I../lib -I../lib/common -I../lib/compress -I../lib/dictBuilder -I../lib/deprecated -I../programs -DZSTD_MULTITHREAD -O0 -Wall -Wextra -Wcast-qual -Wcast-align -Wshadow -Wstrict-aliasing=1 -Wswitch-enum -Wdeclaration-after-statement -Wstrict-prototypes -Wundef -Wvla -Wformat=2 -Winit-self -Wfloat-equal -Wwrite-strings -Wredundant-decls -Wmissing-prototypes -g -DDEBUGLEVEL=1 -g -gdwarf-5 -grecord-command-line -fdebug-macro -Wl,--build-id=sha1 -pthread ../lib/dictBuilder/cover.c ../lib/dictBuilder/divsufsort.c ../lib/dictBuilder/fastcover.c ../lib/dictBuilder/zdict.c ../programs/util.c ../programs/timefn.c ../programs/datagen.c fuzzer.c zstdmt_d_huf_decompress.o zstdmt_d_zstd_ddict.o zstdmt_d_zstd_decompress.o zstdmt_d_zstd_decompress_block.o zstdmt_m_debug.o zstdmt_m_entropy_common.o zstdmt_m_error_private.o zstdmt_m_fse_decompress.o zstdmt_m_pool.o zstdmt_m_threading.o zstdmt_m_xxhash.o zstdmt_m_zstd_common.o zstdmt_c_fse_compress.o zstdmt_c_hist.o zstdmt_c_huf_compress.o zstdmt_c_zstd_compress.o zstdmt_c_zstd_compress_literals.o zstdmt_c_zstd_compress_sequences.o zstdmt_c_zstd_compress_superblock.o zstdmt_c_zstd_double_fast.o zstdmt_c_zstd_fast.o zstdmt_c_zstd_lazy.o zstdmt_c_zstd_ldm.o zstdmt_c_zstd_opt.o zstdmt_c_zstdmt_compress.o -o fuzzer\nmake: Leaving directory '/testbed/tests'\n"
+  }
+ ],
+ "points": [
+  {
+   "why": "first hunk that changes a statement: the removed `if (cctx == NULL) {` block of ZSTD_initStaticCCtx, rewritten as one line (the hunks before it change a comment and a signature)",
+   "at": "lib/compress/zstd_compress.c:102",
+   "test_command": "tests/fuzzer -v -T1mn",
+   "captures": [
+    "workspace",
+    "workspaceSize",
+    "ws",
+    "cctx"
+   ],
+   "command": "peeky probe . --at lib/compress/zstd_compress.c:102 --capture workspace,workspaceSize,ws,cctx --timeout 300 --json --test -- tests/fuzzer -v -T1mn",
+   "exit": 0,
+   "seconds": 6.5,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "exit",
+    "hits": 1,
+    "exit_code": 1,
+    "seconds": 6.313,
+    "warnings": [
+     "Peeky runs tests/fuzzer in an environment of its own: of yours it passes only PATH, TMPDIR, TMP, TEMP, LANG and LC_ALL, and HOME is a directory of Peeky's. A test that reads another of your variables, or HOME, may run otherwise"
+    ]
+   },
+   "values": {
+    "read": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "workspace",
+      "value": "0x0000aaaaaac186a0"
+     },
+     {
+      "selector": "workspaceSize",
+      "value": "532872"
+     },
+     {
+      "selector": "ws",
+      "value": "{workspace = 0x0000aaaaaac186a0, workspaceEnd = 0x0000aaaaaac9a828, objectEnd = 0x0000aaaaaac18b28, tableEnd = 0x0000aaaaaac18b28, tableValidEnd = 0x0000aaaaaac"
+     },
+     {
+      "selector": "cctx",
+      "value": "0x0000aaaaaac186a0"
+     }
+    ]
+   },
+   "leftover_processes": 0
+  },
+  {
+   "why": "last hunk that changes a statement: the call ZSTD_cwksp_bump_oversized_duration(ws, 0) in ZSTD_resetCCtx_internal, which the fix makes conditional (the hunk after it only removes trailing whitespace in ZSTD_copyCCtx_internal, and the other files' hunks are comments)",
+   "at": "lib/compress/zstd_compress.c:1461",
+   "test_command": "tests/fuzzer -v -T1mn",
+   "captures": [
+    "zc",
+    "params",
+    "pledgedSrcSize",
+    "crp"
+   ],
+   "command": "peeky probe . --at lib/compress/zstd_compress.c:1461 --capture zc,params,pledgedSrcSize,crp --timeout 300 --json --test -- tests/fuzzer -v -T1mn",
+   "exit": 0,
+   "seconds": 6.5,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "exit",
+    "hits": 1,
+    "exit_code": 1,
+    "seconds": 6.352,
+    "warnings": [
+     "Peeky runs tests/fuzzer in an environment of its own: of yours it passes only PATH, TMPDIR, TMP, TEMP, LANG and LC_ALL, and HOME is a directory of Peeky's. A test that reads another of your variables, or HOME, may run otherwise"
+    ]
+   },
+   "values": {
+    "read": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "zc",
+      "value": "0x0000aaaaaabf12a0"
+     },
+     {
+      "selector": "params",
+      "value": "{format = ZSTD_f_zstd1, cParams = {windowLog = 19, chainLog = 13, hashLog = 14, searchLog = 1, minMatch = 7, targetLength = 0, strategy = ZSTD_fast}, fParams = "
+     },
+     {
+      "selector": "pledgedSrcSize",
+      "value": "5242880"
+     },
+     {
+      "selector": "crp",
+      "value": "ZSTDcrp_makeClean"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:21:18+00:00"
+}

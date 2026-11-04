@@ -1,0 +1,116 @@
+{
+ "bug": "apache__dubbo-7041",
+ "language": "java",
+ "category": "E",
+ "image": "peeky-study/apache__dubbo-7041:peeky-r3",
+ "image_id": "sha256:8c97e67e04c73b65913f528a9dc349072641bbd32c4ae6843d5797e14699b138",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:56:53+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the statement after the inserted TypeVariable branch in getReturnTypes (the else branch's cast; the only code hunk)",
+   "at": "dubbo-common/src/main/java/org/apache/dubbo/common/utils/ReflectUtils.java:1206",
+   "launch": {
+    "ready_seconds": 3.1
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at dubbo-common/src/main/java/org/apache/dubbo/common/utils/ReflectUtils.java:1206 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 0.6
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/dubbo-common/src/main/java/org/apache/dubbo/common/utils/ReflectUtils.java:1206",
+    "function": "ReflectUtils.getReturnTypes(Method)"
+   },
+   "moved": false,
+   "values": {
+    "shown": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "method",
+      "value": "Method@950"
+     },
+     {
+      "name": "returnType",
+      "value": "Class (CompletableFuture)@951"
+     },
+     {
+      "name": "genericReturnType",
+      "value": "ParameterizedTypeImpl@952"
+     },
+     {
+      "name": "actualArgType",
+      "value": "Class (String)@953"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 4
+  },
+  {
+   "role": "assertion",
+   "why": "the first assertion of testGetReturnTypes",
+   "at": "dubbo-common/src/test/java/org/apache/dubbo/common/utils/ReflectUtilsTest.java:412",
+   "launch": {
+    "ready_seconds": 3.1
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at dubbo-common/src/test/java/org/apache/dubbo/common/utils/ReflectUtilsTest.java:412 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 0.6
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/dubbo-common/src/test/java/org/apache/dubbo/common/utils/ReflectUtilsTest.java:412",
+    "function": "ReflectUtilsTest.testGetReturnTypes()"
+   },
+   "moved": false,
+   "values": {
+    "shown": 3,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "clazz",
+      "value": "Class (ReflectUtilsTest$TypeClass)@926"
+     },
+     {
+      "name": "types",
+      "value": "Type[2]@950"
+     },
+     {
+      "name": "this",
+      "value": "ReflectUtilsTest@951"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 8
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:57:05+00:00"
+}

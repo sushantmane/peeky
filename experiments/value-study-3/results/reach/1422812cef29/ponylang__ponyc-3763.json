@@ -1,0 +1,106 @@
+{
+ "bug": "ponylang__ponyc-3763",
+ "language": "c",
+ "category": "D",
+ "image": "peeky-study/ponylang__ponyc-3763:peeky-r3",
+ "image_id": "sha256:07d3ea66e88f05c0b201222714d73036b7525acd0761995f91652859339bfb68",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:56:08+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [
+  {
+   "command": "cmake --build build-peeky/cmake --parallel 4 --target libponyc.tests > /root/reach/rebuild.log 2>&1; tail -3 /root/reach/rebuild.log",
+   "exit": 0,
+   "seconds": 1.1,
+   "output": "[ 74%] Building CXX object test/libponyc/CMakeFiles/libponyc.tests.dir/iftype.cc.o\n[ 74%] Linking CXX executable /testbed/build-peeky/debug/libponyc.tests\n[100%] Built target libponyc.tests\n"
+  }
+ ],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the statement after the fix's only hunk, an insertion in scope_iftype",
+   "at": "src/libponyc/pass/scope.c:212",
+   "commands": [
+    {
+     "command": "peeky session start . --binary build-peeky/debug/libponyc.tests --at src/libponyc/pass/scope.c:212 --name reach --timeout 300 --json -- --gtest_filter=IftypeTest.InsideLambda",
+     "exit": 0,
+     "seconds": 4.7
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/libponyc/pass/scope.c:212",
+    "function": "scope_iftype"
+   },
+   "moved": false,
+   "values": {
+    "shown": 0,
+    "withheld": 7,
+    "sample": [],
+    "withheld_sample": [
+     {
+      "name": "opt",
+      "value": "0x0000aaaaacec1220",
+      "note": "Peeky does not judge whether this local is initialized here: it could not read the build's debug information (over Peeky's limit of 300 MiB in memory; probe a smaller program), so it may hold leftovers"
+     },
+     {
+      "name": "ast",
+      "value": "0x0000fffff7b61c80",
+      "note": "Peeky does not judge whether this local is initialized here: it could not read the build's debug information (over Peeky's limit of 300 MiB in memory; probe a smaller program), so it may hold leftovers"
+     },
+     {
+      "name": "subtype",
+      "value": "0x0000fffff7b61d00",
+      "note": "Peeky does not judge whether this local is initialized here: it could not read the build's debug information (over Peeky's limit of 300 MiB in memory; probe a smaller program), so it may hold leftovers"
+     },
+     {
+      "name": "supertype",
+      "value": "0x0000fffff7b61800",
+      "note": "Peeky does not judge whether this local is initialized here: it could not read the build's debug information (over Peeky's limit of 300 MiB in memory; probe a smaller program), so it may hold leftovers"
+     },
+     {
+      "name": "body",
+      "value": "0x0000fffff7b61b00",
+      "note": "Peeky does not judge whether this local is initialized here: it could not read the build's debug information (over Peeky's limit of 300 MiB in memory; probe a smaller program), so it may hold leftovers"
+     },
+     {
+      "name": "typeparam_store",
+      "value": "0x0000fffff7b61480",
+      "note": "Peeky does not judge whether this local is initialized here: it could not read the build's debug information (over Peeky's limit of 300 MiB in memory; probe a smaller program), so it may hold leftovers"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  },
+  {
+   "role": "assertion",
+   "why": "the test body's TEST_COMPILE, an ASSERT_NO_FATAL_FAILURE around the compile; it is the test's first statement",
+   "at": "test/libponyc/iftype.cc:390",
+   "commands": [
+    {
+     "command": "peeky session start . --binary build-peeky/debug/libponyc.tests --at test/libponyc/iftype.cc:390 --name reach --timeout 300 --json -- --gtest_filter=IftypeTest.InsideLambda",
+     "exit": 2,
+     "seconds": 1.0
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "UNSUPPORTED",
+    "message": "test/libponyc/iftype.cc is a unit Peeky doesn't judge: its line table records no MD5s, and names <stdin>, which clang adds for an inheriting constructor: the likely cause is a #line naming another file, as bison and flex write (bison -l, flex -L), or libc++'s system-header pragma (-D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)",
+    "hint": "Nothing ran. Rebuild as the message says (clang -O0 -g -gdwarf-5 -grecord-command-line), or probe a unit `peeky describe --binary` judges.",
+    "retryable": false
+   },
+   "leftover_processes": 1
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:56:15+00:00"
+}

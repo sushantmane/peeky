@@ -1,0 +1,104 @@
+{
+ "bug": "pylint-dev__pylint-8898",
+ "language": "python",
+ "category": "E",
+ "image": "peeky-study/pylint-dev__pylint-8898:peeky-r3",
+ "image_id": "sha256:cc4e35b387337562f485c6e50445aab415d37350d9d492295e39c3dfb048c673",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:52:44+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed loop header in _regexp_csv_transfomer (the only hunk changing a statement; utils/__init__.py's hunks are imports and __all__, utils.py's add an import and a new function between functions)",
+   "at": "pylint/config/argument.py:117",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at pylint/config/argument.py:117 --name reach --timeout 300 --json -- -q -p no:cacheprovider tests/config/test_config.py::test_csv_regex_error",
+     "exit": 0,
+     "seconds": 0.9
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/pylint/config/argument.py:117",
+    "function": "_regexp_csv_transfomer",
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 2,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "patterns",
+      "value": "[]"
+     },
+     {
+      "name": "value",
+      "value": "''"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "tests/config/test_config.py:171",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at tests/config/test_config.py:171 --name reach --timeout 300 --json -- -q -p no:cacheprovider tests/config/test_config.py::test_csv_regex_error",
+     "exit": 0,
+     "seconds": 0.9
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/tests/config/test_config.py:171",
+    "function": "test_csv_regex_error",
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 2,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "capsys",
+      "value": "<_pytest.capture.CaptureFixture object at 0xffff8bbd8fe0>"
+     },
+     {
+      "name": "output",
+      "value": "<CaptureResult, len() = 2>"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 4
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:52:47+00:00"
+}

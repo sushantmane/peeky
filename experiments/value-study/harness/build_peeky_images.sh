@@ -60,6 +60,8 @@ build_dist() {
   (cd "$ctx/src" && TMPDIR=$ctx/pip-tmp "$python" -m pip wheel . --no-deps -q -w "$ctx/wheel")
   ls "$ctx"/wheel/*.whl >/dev/null
   cp "$ctx/src/docs/AGENT_GUIDE.md" "$ctx/src/docs/COOKBOOK.md" "$ctx/src/docs/ERRORS.md" "$ctx/docs/"
+  # The first-probe page that the guide points to first (ADR 0009), on a commit that has it.
+  if [ -f "$ctx/src/docs/FIRST.md" ]; then cp "$ctx/src/docs/FIRST.md" "$ctx/docs/"; fi
   cp "$ctx"/src/docs/lang/* "$ctx/docs/lang/"
   rm -rf "$ctx/src" "$ctx/pip-tmp"
   log "building $DIST"

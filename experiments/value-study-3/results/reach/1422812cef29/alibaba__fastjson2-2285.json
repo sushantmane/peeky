@@ -1,0 +1,62 @@
+{
+ "bug": "alibaba__fastjson2-2285",
+ "language": "java",
+ "category": "E",
+ "image": "peeky-study/alibaba__fastjson2-2285:peeky-r3",
+ "image_id": "sha256:8c0a3c479fd758e1ad12ccb012e3dd36203efa87e12da5bbc90a8517e0d34c5b",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:56:55+00:00",
+ "needs": [],
+ "notes": "One hunk, a pure insertion inside the @JSONType serializer branch of getBeanInfo; its point is the next statement in the same function (line 222; line 220 is the if block's closing brace).",
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the statement after the inserted writeEnumAsJavaBean assignment in getBeanInfo (the only hunk)",
+   "at": "core/src/main/java/com/alibaba/fastjson2/writer/ObjectWriterBaseModule.java:222",
+   "launch": {
+    "ready_seconds": 21.6
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at core/src/main/java/com/alibaba/fastjson2/writer/ObjectWriterBaseModule.java:222 --name reach --timeout 300 --json",
+     "exit": 2,
+     "seconds": 0.3
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "INVALID_REQUEST",
+    "message": "Missing executable line debug information; compile with -g",
+    "hint": "Fix the request arguments; see `peeky <command> --help`.",
+    "retryable": false
+   },
+   "leftover_processes": 3
+  },
+  {
+   "role": "assertion",
+   "why": "the first assertion of Issue2269.test (the serialized JSON)",
+   "at": "core/src/test/java/com/alibaba/fastjson2/issues_2200/Issue2269.java:21",
+   "launch": {
+    "ready_seconds": 15.4
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at core/src/test/java/com/alibaba/fastjson2/issues_2200/Issue2269.java:21 --name reach --timeout 300 --json",
+     "exit": 2,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "INVALID_REQUEST",
+    "message": "Missing executable line debug information; compile with -g",
+    "hint": "Fix the request arguments; see `peeky <command> --help`.",
+    "retryable": false
+   },
+   "leftover_processes": 6
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:57:37+00:00"
+}

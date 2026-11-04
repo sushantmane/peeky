@@ -1,0 +1,105 @@
+{
+ "bug": "django__django-11400",
+ "language": "python",
+ "image": "peeky-study/django__django-11400:peeky-r3",
+ "image_id": "sha256:6628e08e1ed765ca06a758d86d2393ed907febf8973453203c877e08d860a1c1",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:52:27+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the removed empty ordering in RelatedFieldListFilter.field_choices (the first hunk)",
+   "at": "django/contrib/admin/filters.py:197",
+   "test_command": "python tests/runtests.py --settings=test_sqlite --parallel 1 admin_filters.tests.ListFiltersTests.test_relatedfieldlistfilter_foreignkey_default_ordering",
+   "captures": [
+    "field",
+    "model_admin",
+    "request",
+    "self"
+   ],
+   "command": "peeky probe . --at django/contrib/admin/filters.py:197 --capture field,model_admin,request,self --timeout 300 --json --test -- python tests/runtests.py --settings=test_sqlite --parallel 1 admin_filters.tests.ListFiltersTests.test_relatedfieldlistfilter_foreignkey_default_ordering",
+   "exit": 0,
+   "seconds": 2.1,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "exit",
+    "hits": 1,
+    "exit_code": 1,
+    "seconds": 1.779,
+    "warnings": []
+   },
+   "values": {
+    "read": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "field",
+      "value": "<django.db.models.fields.related.ForeignKey: employee>"
+     },
+     {
+      "selector": "model_admin",
+      "value": "<admin_filters.tests.ListFiltersTests.test_relatedfieldlistfilter_foreignkey_default_ordering.<locals>.BookAdmin object at 0xffff87977590>"
+     },
+     {
+      "selector": "request",
+      "value": "<WSGIRequest: GET '/'>"
+     },
+     {
+      "selector": "self",
+      "value": "<django.contrib.admin.filters.RelatedFieldListFilter object at 0xffff8798d810>"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  },
+  {
+   "why": "the changed comprehension source in ForeignObjectRel.get_choices (the last hunk)",
+   "at": "django/db/models/fields/reverse_related.py:126",
+   "test_command": "python tests/runtests.py --settings=test_sqlite --parallel 1 model_fields.tests.GetChoicesOrderingTests.test_get_choices_reverse_related_field_default_ordering",
+   "captures": [
+    "blank_choice",
+    "include_blank",
+    "ordering",
+    "self"
+   ],
+   "command": "peeky probe . --at django/db/models/fields/reverse_related.py:126 --capture blank_choice,include_blank,ordering,self --timeout 300 --json --test -- python tests/runtests.py --settings=test_sqlite --parallel 1 model_fields.tests.GetChoicesOrderingTests.test_get_choices_reverse_related_field_default_ordering",
+   "exit": 0,
+   "seconds": 2.2,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "exit",
+    "hits": 1,
+    "exit_code": 1,
+    "seconds": 1.969,
+    "warnings": []
+   },
+   "values": {
+    "read": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "blank_choice",
+      "value": "[('', '---------')]"
+     },
+     {
+      "selector": "include_blank",
+      "value": "False"
+     },
+     {
+      "selector": "ordering",
+      "value": "()"
+     },
+     {
+      "selector": "self",
+      "value": "<ManyToOneRel: model_fields.bar>"
+     }
+    ]
+   },
+   "leftover_processes": 2
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:52:32+00:00"
+}

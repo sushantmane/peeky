@@ -1,0 +1,83 @@
+{
+ "bug": "fmtlib__fmt-3260",
+ "language": "cpp",
+ "category": "E",
+ "image": "peeky-study/fmtlib__fmt-3260:peeky-r3",
+ "image_id": "sha256:9d8cc12aea259126d6f6637c473beee701bed334afeb8758f31ac5bdf34cfb39",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:55:15+00:00",
+ "needs": [],
+ "notes": "The failing test is the ctest test chrono-test: the binary with no arguments, as ctest runs it. Its failing cases are chrono_test.tm_align and tp_align, which the test patch adds.",
+ "prepare": [
+  {
+   "command": "cmake --build build-peeky --parallel 4 --target chrono-test > /root/reach/rebuild.log 2>&1; tail -3 /root/reach/rebuild.log",
+   "exit": 0,
+   "seconds": 2.1,
+   "output": "[ 90%] Building CXX object test/CMakeFiles/chrono-test.dir/chrono-test.cc.o\n[100%] Linking CXX executable ../bin/chrono-test\n[100%] Built target chrono-test\n"
+  }
+ ],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the removed default-spec initialization in the system_clock time_point formatter's constructor (first hunk)",
+   "at": "include/fmt/chrono.h:2118",
+   "commands": [
+    {
+     "command": "peeky session start . --binary build-peeky/bin/chrono-test --at include/fmt/chrono.h:2118 --name reach --timeout 300 --json",
+     "exit": 2,
+     "seconds": 0.5
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "UNSUPPORTED",
+    "message": "No unit of build-peeky/bin/chrono-test Peeky judges has code in include/fmt/chrono.h. Units Peeky doesn't judge name it in their line tables: test/chrono-test.cc: its line table records no MD5s, and names <stdin>, which clang adds for an inheriting constructor: the likely cause is a #line naming another file, as bison and flex write (bison -l, flex -L), or libc++'s system-header pragma (-D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)",
+    "hint": "Nothing ran. Rebuild as the message says (clang -O0 -g -gdwarf-5 -grecord-command-line), or probe a unit `peeky describe --binary` judges.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "gold",
+   "why": "the first removed statement of formatter<std::tm>::do_parse (last hunk)",
+   "at": "include/fmt/chrono.h:2203",
+   "commands": [
+    {
+     "command": "peeky session start . --binary build-peeky/bin/chrono-test --at include/fmt/chrono.h:2203 --name reach --timeout 300 --json",
+     "exit": 2,
+     "seconds": 0.4
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "UNSUPPORTED",
+    "message": "No unit of build-peeky/bin/chrono-test Peeky judges has code in include/fmt/chrono.h. Units Peeky doesn't judge name it in their line tables: test/chrono-test.cc: its line table records no MD5s, and names <stdin>, which clang adds for an inheriting constructor: the likely cause is a #line naming another file, as bison and flex write (bison -l, flex -L), or libc++'s system-header pragma (-D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)",
+    "hint": "Nothing ran. Rebuild as the message says (clang -O0 -g -gdwarf-5 -grecord-command-line), or probe a unit `peeky describe --binary` judges.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "assertion",
+   "why": "the first EXPECT_EQ of chrono_test.tm_align, the binary's first failing case",
+   "at": "test/chrono-test.cc:483",
+   "commands": [
+    {
+     "command": "peeky session start . --binary build-peeky/bin/chrono-test --at test/chrono-test.cc:483 --name reach --timeout 300 --json",
+     "exit": 2,
+     "seconds": 0.4
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "UNSUPPORTED",
+    "message": "test/chrono-test.cc is a unit Peeky doesn't judge: its line table records no MD5s, and names <stdin>, which clang adds for an inheriting constructor: the likely cause is a #line naming another file, as bison and flex write (bison -l, flex -L), or libc++'s system-header pragma (-D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)",
+    "hint": "Nothing ran. Rebuild as the message says (clang -O0 -g -gdwarf-5 -grecord-command-line), or probe a unit `peeky describe --binary` judges.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:55:19+00:00"
+}

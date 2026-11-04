@@ -1,0 +1,124 @@
+{
+ "bug": "matplotlib__matplotlib-21568",
+ "language": "python",
+ "category": "B",
+ "image": "peeky-study/matplotlib__matplotlib-21568:peeky-r3",
+ "image_id": "sha256:d77b69cda507aaba95a626d9d04391fd54cbb8eafb96fc60371e4361a95cc105",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:50:51+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the first statement the only code hunk changes, in _wrap_in_tex (the line before it is a comment)",
+   "at": "lib/matplotlib/dates.py:599",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at lib/matplotlib/dates.py:599 --name reach --timeout 300 --json -- -q -p no:cacheprovider 'lib/matplotlib/tests/test_dates.py::test_date_formatter_usetex[delta2-expected2]'",
+     "exit": 0,
+     "seconds": 1.5
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/lib/matplotlib/dates.py:599",
+    "function": "_wrap_in_tex",
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 3,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "p",
+      "value": "'([a-zA-Z]+)'"
+     },
+     {
+      "name": "ret_text",
+      "value": "'01-01 00'"
+     },
+     {
+      "name": "text",
+      "value": "'01-01 00'"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "lib/matplotlib/tests/test_dates.py:345",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at lib/matplotlib/tests/test_dates.py:345 --name reach --timeout 300 --json -- -q -p no:cacheprovider 'lib/matplotlib/tests/test_dates.py::test_date_formatter_usetex[delta2-expected2]'",
+     "exit": 0,
+     "seconds": 1.5
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/lib/matplotlib/tests/test_dates.py:345",
+    "function": "test_date_formatter_usetex",
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 6,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "d1",
+      "value": "datetime.datetime(1990, 1, 1, 0, 0)"
+     },
+     {
+      "name": "d2",
+      "value": "datetime.datetime(1990, 1, 1, 20, 0)"
+     },
+     {
+      "name": "delta",
+      "value": "datetime.timedelta(seconds=72000)"
+     },
+     {
+      "name": "expected",
+      "value": "['$\\\\mathdefault{01{-}01\\\\;00}$', '$\\\\mathdefault{01{-}01\\\\;02}$', '$\\\\mathdefault{01{-}01\\\\;04}$', '$\\\\mathdefault{01{-}01\\\\;06}$', '$\\\\mathdefault{01{-}01\\\\;0"
+     },
+     {
+      "name": "formatter",
+      "value": "<matplotlib.dates.AutoDateFormatter object at 0xffff55bf7390>"
+     },
+     {
+      "name": "locator",
+      "value": "<matplotlib.dates.AutoDateLocator object at 0xffff55be90d0>"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 4
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:50:55+00:00"
+}

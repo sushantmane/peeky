@@ -1,0 +1,64 @@
+{
+ "bug": "clap-rs__clap-5873",
+ "language": "rust",
+ "image": "peeky-study/clap-rs__clap-5873:peeky-r3",
+ "image_id": "sha256:71e28e367a72a5610eb3ea090420a7f59bbc7e0d1f4d81483edec3dcf81606e8",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:32:41+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the changed `if let Some((name, _)) = did_you_mean` in Parser::did_you_mean_error, which the fix wraps (the only hunk)",
+   "at": "clap_builder/src/parser/parser.rs:1574",
+   "test_command": "cargo test -p clap --test builder ignore_errors::did_you_mean -- --exact --test-threads=1",
+   "captures": [
+    "self",
+    "arg",
+    "matcher",
+    "remaining_args"
+   ],
+   "command": "peeky probe . --at clap_builder/src/parser/parser.rs:1574 --capture self,arg,matcher,remaining_args --timeout 300 --json --test -- cargo test -p clap --test builder ignore_errors::did_you_mean -- --exact --test-threads=1",
+   "exit": 0,
+   "seconds": 45.8,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "exit",
+    "hits": 1,
+    "exit_code": 101,
+    "seconds": 29.243,
+    "warnings": [
+     "Line 1574 stops up to 2 times per pass in clap_builder::parser::parser::Parser::did_you_mean_error (2 breakpoint locations): --hits, --set-hit and --set-at's @HIT count stops, not passes (as do session hit numbers); each hit's stop (1 to 2, in address order) says which location.",
+     "remaining_args: This Rust &[&std::ffi::os_str::OsStr] shows LLDB's summary (its type and address), not its contents: the crate enables nightly features (in clap_builder/src/lib.rs), which can free a buffer without Peeky seeing it. Capture remaining_args.length for the length, and check contents with `peeky verify`.",
+     "Peeky builds the test with Cargo, and runs its executable itself, in environments of its own: Cargo and build scripts get none of your variables, and the test only PATH (the toolchain's directory, /usr/bin and /bin), LC_ALL=C, a HOME of Peeky's, CARGO_MANIFEST_DIR and, in an integration test, CARGO_BIN_EXE_<name>. `cargo test` would pass on your environment, and more CARGO_* variables: a test or build script that reads one may run otherwise"
+    ]
+   },
+   "values": {
+    "read": 3,
+    "withheld": 1,
+    "sample": [
+     {
+      "selector": "self",
+      "value": "0x0000fffff7dbb3e0"
+     },
+     {
+      "selector": "arg",
+      "value": "&str @ 0xfffff7db9948"
+     },
+     {
+      "selector": "matcher",
+      "value": "0x0000fffff7dbb338"
+     },
+     {
+      "selector": "remaining_args",
+      "value": "&[&std::ffi::os_str::OsStr] @ 0xfffff7db9ba0",
+      "note": "This Rust &[&std::ffi::os_str::OsStr] shows LLDB's summary (its type and address), not its contents: the crate enables nightly features (in clap_builder/src/lib.rs), which can free a buffer without Peeky seeing it. Capture remaining_args.length for the length, and check contents with `peeky verify`."
+     }
+    ]
+   },
+   "leftover_processes": 1
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:33:28+00:00"
+}

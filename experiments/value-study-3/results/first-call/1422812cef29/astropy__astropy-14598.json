@@ -1,0 +1,61 @@
+{
+ "bug": "astropy__astropy-14598",
+ "language": "python",
+ "image": "peeky-study/astropy__astropy-14598:peeky-r3",
+ "image_id": "sha256:1bed5291e2bfddaf40bf98a7cd4eb61aa47be6879fd3c08426e0c8a678a4e9ed",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:52:13+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the changed unescaping of a CONTINUE sub-card's string in Card._split (the only code hunk; the other changes the class-level regex constant _strg_comment_RE, a declaration)",
+   "at": "astropy/io/fits/card.py:862",
+   "test_command": "python -m pytest -q -p no:cacheprovider astropy/io/fits/tests/test_header.py::TestHeaderFunctions::test_long_string_value_with_quotes",
+   "captures": [
+    "card",
+    "comments",
+    "image",
+    "keyword"
+   ],
+   "command": "peeky probe . --at astropy/io/fits/card.py:862 --capture card,comments,image,keyword --timeout 300 --json --test -- python -m pytest -q -p no:cacheprovider astropy/io/fits/tests/test_header.py::TestHeaderFunctions::test_long_string_value_with_quotes",
+   "exit": 0,
+   "seconds": 2.3,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "exit",
+    "hits": 1,
+    "exit_code": 1,
+    "seconds": 2.115,
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "values": {
+    "read": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "card",
+      "value": "('TEST', 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx&', '')"
+     },
+     {
+      "selector": "comments",
+      "value": "[]"
+     },
+     {
+      "selector": "image",
+      "value": "\"TEST    = 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx&'CONTINUE  'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'''''                              "
+     },
+     {
+      "selector": "keyword",
+      "value": "'TEST'"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:52:15+00:00"
+}

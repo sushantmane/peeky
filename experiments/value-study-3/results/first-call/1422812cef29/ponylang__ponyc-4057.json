@@ -1,0 +1,73 @@
+{
+ "bug": "ponylang__ponyc-4057",
+ "language": "c",
+ "image": "peeky-study/ponylang__ponyc-4057:peeky-r3",
+ "image_id": "sha256:66065fd84fac109fb2e810cd0fe56646094331e6045fb28e8919dc835a3a4312",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:25:39+00:00",
+ "prepare": [
+  {
+   "command": "mkdir -p build-peeky/out",
+   "exit": 0,
+   "seconds": 0.0,
+   "output": ""
+  }
+ ],
+ "points": [
+  {
+   "why": "the fix's only hunk: the branch to next_block in gen_match (824 is a comment)",
+   "at": "src/libponyc/codegen/genmatch.c:825",
+   "test_command": "build-peeky/debug/ponyc --path=build/debug/test_lib --output=build-peeky/out test/libponyc-run/regression-3447",
+   "captures": [
+    "c",
+    "ast",
+    "needed",
+    "phi_type"
+   ],
+   "command": "peeky probe . --at src/libponyc/codegen/genmatch.c:825 --capture c,ast,needed,phi_type --timeout 300 --json --test -- build-peeky/debug/ponyc --path=build/debug/test_lib --output=build-peeky/out test/libponyc-run/regression-3447",
+   "exit": 1,
+   "seconds": 14.3,
+   "outcome": "read",
+   "detail": {
+    "status": "failed",
+    "ended": null,
+    "hits": 1,
+    "exit_code": null,
+    "seconds": 14.073,
+    "warnings": [
+     "The probe let the program go on after it stopped on signal SIGSEGV: address not mapped to object (fault address: 0x0), which Peeky doesn't take for a crash. The debugger may not deliver a signal to the program, so its run after that stop can differ from one without Peeky.",
+     "Peeky runs build-peeky/debug/ponyc in an environment of its own: of yours it passes only PATH, TMPDIR, TMP, TEMP, LANG and LC_ALL, and HOME is a directory of Peeky's. A test that reads another of your variables, or HOME, may run otherwise"
+    ],
+    "error": {
+     "code": "PROGRAM_CRASHED",
+     "message": "The program crashed after hit 1: signal SIGSEGV: address not mapped to object (fault address: 0x0), outside the program's sources, in a call from gen_match at src/libponyc/codegen/genmatch.c:825. Peeky ended it there, so it has no exit status"
+    }
+   },
+   "values": {
+    "read": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "c",
+      "value": "0x0000fffffffff548"
+     },
+     {
+      "selector": "ast",
+      "value": "0x0000fffff72635c0"
+     },
+     {
+      "selector": "needed",
+      "value": "false"
+     },
+     {
+      "selector": "phi_type",
+      "value": "0x0000000000000000"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:25:54+00:00"
+}

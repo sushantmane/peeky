@@ -1,0 +1,61 @@
+{
+ "bug": "scikit-learn__scikit-learn-26194",
+ "language": "python",
+ "image": "peeky-study/scikit-learn__scikit-learn-26194:peeky-r3",
+ "image_id": "sha256:a7de5d05758eeb8e432f3e2e1ad4f9f6400bc1a90f9145778b7289f7a4624533",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:53:19+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the only code hunk (the others change roc_curve's docstring): the extra threshold, thresholds[0] + 1",
+   "at": "sklearn/metrics/_ranking.py:1086",
+   "test_command": "python -m pytest -q -p no:cacheprovider sklearn/metrics/tests/test_ranking.py::test_roc_curve_drop_intermediate",
+   "captures": [
+    "drop_intermediate",
+    "fps",
+    "optimal_idxs",
+    "pos_label"
+   ],
+   "command": "peeky probe . --at sklearn/metrics/_ranking.py:1086 --capture drop_intermediate,fps,optimal_idxs,pos_label --timeout 300 --json --test -- python -m pytest -q -p no:cacheprovider sklearn/metrics/tests/test_ranking.py::test_roc_curve_drop_intermediate",
+   "exit": 0,
+   "seconds": 2.5,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "exit",
+    "hits": 1,
+    "exit_code": 1,
+    "seconds": 2.301,
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "values": {
+    "read": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "drop_intermediate",
+      "value": "True"
+     },
+     {
+      "selector": "fps",
+      "value": "array([0., 0., 0., 4.])"
+     },
+     {
+      "selector": "optimal_idxs",
+      "value": "array([0, 1, 5])"
+     },
+     {
+      "selector": "pos_label",
+      "value": "None"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:53:22+00:00"
+}

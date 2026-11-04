@@ -1,0 +1,76 @@
+{
+ "bug": "clap-rs__clap-2882",
+ "language": "rust",
+ "category": "D",
+ "image": "peeky-study/clap-rs__clap-2882:peeky-r3",
+ "image_id": "sha256:6bb38b6636bd9613bb3a744c9ec715bde6fe015eec4a2d92cc34304ddcbd978e",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T09:01:03+00:00",
+ "needs": [],
+ "notes": "The fix is in clap_derive, a proc-macro crate: its lines run inside rustc while the failing test's crate compiles, not in the test binary. No failing test runs them, so each gold point runs the first failing test (clap_derive's help test target), as the test runs.",
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "`is_enum: false`, the field initializer after the inserted `help_heading: None` in Attrs::new's struct literal (first code hunk, a pure insertion; the hunk above adds a struct field, a declaration)",
+   "at": "clap_derive/src/attrs.rs:288",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at clap_derive/src/attrs.rs:288 --name reach --timeout 300 --json -- --exact app_help_heading_applied --test-threads=1",
+     "exit": 2,
+     "seconds": 2.6
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "UNSUPPORTED",
+    "message": "Peeky analyses only code the program runs: `clap_derive` is a procedural macro, which runs in the compiler. Analyse the packages that use it",
+    "hint": "Nothing was built. Change what the message names in the workspace or its configuration, or analyse another package.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "gold",
+   "why": "the `_ => Ok(NameExpr(name, expr))` arm after the inserted \"help_heading\" arm in ClapAttr::parse (last code hunk, a pure insertion)",
+   "at": "clap_derive/src/parse.rs:110",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at clap_derive/src/parse.rs:110 --name reach --timeout 300 --json -- --exact app_help_heading_applied --test-threads=1",
+     "exit": 2,
+     "seconds": 1.6
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "UNSUPPORTED",
+    "message": "Peeky analyses only code the program runs: `clap_derive` is a procedural macro, which runs in the compiler. Analyse the packages that use it",
+    "hint": "Nothing was built. Change what the message names in the workspace or its configuration, or analyse another package.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "clap_derive/tests/help.rs:49",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at clap_derive/tests/help.rs:49 --name reach --timeout 300 --json -- --exact app_help_heading_applied --test-threads=1",
+     "exit": 2,
+     "seconds": 1.7
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "UNSUPPORTED",
+    "message": "Peeky analyses only code the program runs: `clap_derive` is a procedural macro, which runs in the compiler. Analyse the packages that use it",
+    "hint": "Nothing was built. Change what the message names in the workspace or its configuration, or analyse another package.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T09:01:10+00:00"
+}

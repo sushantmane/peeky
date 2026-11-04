@@ -1,0 +1,116 @@
+{
+ "bug": "apache__dubbo-10638",
+ "language": "java",
+ "category": "E",
+ "image": "peeky-study/apache__dubbo-10638:peeky-r3",
+ "image_id": "sha256:db613d2163867374aac3ecf2821cb4c6f5ecace2e5f378f4cbebb8acf82fb4e7",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:56:23+00:00",
+ "needs": [],
+ "notes": "Gold points: the first code hunk is CompatibleTypeUtils' LocalTime conversion (its other hunks are an import and a constant's declaration); the last is PojoUtils.generalize's insertion (its other hunk is imports), whose point is the statement after it. The failing test is PojoUtilsTest; its method that fails is the hidden testJava8Time, which the run filters to. At base, realize throws (line 770) before the first assertion.",
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed LocalTime conversion in compatibleTypeConvert (first code hunk)",
+   "at": "dubbo-common/src/main/java/org/apache/dubbo/common/utils/CompatibleTypeUtils.java:131",
+   "launch": {
+    "ready_seconds": 3.1
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at dubbo-common/src/main/java/org/apache/dubbo/common/utils/CompatibleTypeUtils.java:131 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 0.7
+    }
+   ],
+   "outcome": "no stop",
+   "detail": {
+    "state": "terminated",
+    "reason": null,
+    "location": null,
+    "function": null
+   },
+   "program": {
+    "state": "terminated",
+    "exit_code": 0,
+    "output_tail": ""
+   },
+   "leftover_processes": 4
+  },
+  {
+   "role": "gold",
+   "why": "the statement after the inserted java.time branch in generalize (last code hunk)",
+   "at": "dubbo-common/src/main/java/org/apache/dubbo/common/utils/PojoUtils.java:145",
+   "launch": {
+    "ready_seconds": 3.1
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at dubbo-common/src/main/java/org/apache/dubbo/common/utils/PojoUtils.java:145 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 0.7
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/dubbo-common/src/main/java/org/apache/dubbo/common/utils/PojoUtils.java:145",
+    "function": "PojoUtils.generalize(Object,Map)"
+   },
+   "moved": false,
+   "values": {
+    "shown": 2,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "pojo",
+      "value": "LocalDateTime@2332"
+     },
+     {
+      "name": "history",
+      "value": "IdentityHashMap@2333"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 8
+  },
+  {
+   "role": "assertion",
+   "why": "the first assertion of testJava8Time",
+   "at": "dubbo-common/src/test/java/org/apache/dubbo/common/utils/PojoUtilsTest.java:771",
+   "launch": {
+    "ready_seconds": 3.1
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at dubbo-common/src/test/java/org/apache/dubbo/common/utils/PojoUtilsTest.java:771 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 0.7
+    }
+   ],
+   "outcome": "no stop",
+   "detail": {
+    "state": "terminated",
+    "reason": null,
+    "location": null,
+    "function": null
+   },
+   "program": {
+    "state": "terminated",
+    "exit_code": 0,
+    "output_tail": ""
+   },
+   "leftover_processes": 12
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:56:42+00:00"
+}

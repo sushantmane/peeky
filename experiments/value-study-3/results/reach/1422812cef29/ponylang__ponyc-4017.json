@@ -1,0 +1,102 @@
+{
+ "bug": "ponylang__ponyc-4017",
+ "language": "c",
+ "category": "E",
+ "image": "peeky-study/ponylang__ponyc-4017:peeky-r3",
+ "image_id": "sha256:770c404b0eeb1223dadc62c396734788f45b5b351d7aaa566df7361ef49d37d6",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:22:04+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [
+  {
+   "command": "cmake --build build-peeky/cmake --parallel 4 --target libponyc.tests > /root/reach/rebuild.log 2>&1; tail -3 /root/reach/rebuild.log",
+   "exit": 0,
+   "seconds": 1.4,
+   "output": "[ 76%] Building CXX object test/libponyc/CMakeFiles/libponyc.tests.dir/flatten.cc.o\n[ 76%] Linking CXX executable /testbed/build-peeky/debug/libponyc.tests\n[100%] Built target libponyc.tests\n"
+  }
+ ],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the fix's only hunk that changes a statement (it also adds the function constraint_contains_tuple): the changed condition of flatten_typeparamref's tuple check",
+   "at": "src/libponyc/pass/flatten.c:83",
+   "commands": [
+    {
+     "command": "peeky session start . --binary build-peeky/debug/libponyc.tests --at src/libponyc/pass/flatten.c:83 --name reach --timeout 300 --json -- --gtest_filter=FlattenTest.TupleConstraintInUnion",
+     "exit": 0,
+     "seconds": 14.5
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 1.8
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/libponyc/pass/flatten.c:83",
+    "function": "flatten_typeparamref"
+   },
+   "moved": false,
+   "values": {
+    "shown": 5,
+    "withheld": 1,
+    "sample": [
+     {
+      "name": "opt",
+      "value": "0x0000aaaaae07ca50"
+     },
+     {
+      "name": "ast",
+      "value": "0x0000fffff7bacac0"
+     },
+     {
+      "name": "cap_ast",
+      "value": "0x0000fffff7bac540"
+     },
+     {
+      "name": "cap",
+      "value": "TK_NONE"
+     },
+     {
+      "name": "constraint",
+      "value": "0x0000fffff7bad3c0"
+     }
+    ],
+    "withheld_sample": [
+     {
+      "name": "set_cap",
+      "value": "TK_NAMEDARGS | 0xaa00",
+      "note": "may be leftovers, or its value from before a `longjmp`: declared at line 105, below this stop, and any call above the stop may return twice (_ZN12_GLOBAL__N_14pool4freeEPv.constprop.0 is code no unit's debug information covers (assembly built without -g?), and 58238 more; a config's \"returns_twice\" "
+     }
+    ]
+   },
+   "leftover_processes": 1
+  },
+  {
+   "role": "assertion",
+   "why": "the test body's TEST_ERRORS_1, a DO (ASSERT_NO_FATAL_FAILURE) around test_expected_errors; it is the test's first statement after the source string",
+   "at": "test/libponyc/flatten.cc:106",
+   "commands": [
+    {
+     "command": "peeky session start . --binary build-peeky/debug/libponyc.tests --at test/libponyc/flatten.cc:106 --name reach --timeout 300 --json -- --gtest_filter=FlattenTest.TupleConstraintInUnion",
+     "exit": 2,
+     "seconds": 1.1
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "UNSUPPORTED",
+    "message": "test/libponyc/flatten.cc is a unit Peeky doesn't judge: its line table records no MD5s, and names <stdin>, which clang adds for an inheriting constructor: the likely cause is a #line naming another file, as bison and flex write (bison -l, flex -L), or libc++'s system-header pragma (-D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)",
+    "hint": "Nothing ran. Rebuild as the message says (clang -O0 -g -gdwarf-5 -grecord-command-line), or probe a unit `peeky describe --binary` judges.",
+    "retryable": false
+   },
+   "leftover_processes": 1
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:22:24+00:00"
+}

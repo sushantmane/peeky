@@ -11,7 +11,7 @@
   },
   "peeky-first": {
    "image_tag": "peeky-r3",
-   "prompts": ["../value-study/harness/prompt.md", "../value-study-2/prompts/prompt-peeky-first.md"],
+   "prompts": ["../value-study/harness/prompt.md", "prompts/prompt-peeky-first.md"],
    "peeky": true
   }
  },

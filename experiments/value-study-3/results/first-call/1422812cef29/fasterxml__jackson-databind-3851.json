@@ -1,0 +1,54 @@
+{
+ "bug": "fasterxml__jackson-databind-3851",
+ "language": "java",
+ "image": "peeky-study/fasterxml__jackson-databind-3851:peeky-r3",
+ "image_id": "sha256:df819f3973e49dcd112a76b7b88ce672bba29c2e770ba436fcde548f008ece51",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:03:20+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the removed `if (!p.isExpectedStartObjectToken())` check in deserialize, the only hunk that changes an executable statement (the others change an import and the _propCreator field declaration), so first and last; testEnumACreatorModeDelegating, the first failing test, runs it",
+   "at": "src/main/java/com/fasterxml/jackson/databind/deser/std/FactoryBasedEnumDeserializer.java:135",
+   "test_command": "mvn test -B -o '-Dtest=com.fasterxml.jackson.databind.deser.creators.JsonCreatorModeForEnum3566#testEnumACreatorModeDelegating'",
+   "captures": [
+    "p",
+    "ctxt",
+    "this"
+   ],
+   "command": "peeky probe . --at src/main/java/com/fasterxml/jackson/databind/deser/std/FactoryBasedEnumDeserializer.java:135 --capture p,ctxt,this --timeout 300 --json --test -- mvn test -B -o '-Dtest=com.fasterxml.jackson.databind.deser.creators.JsonCreatorModeForEnum3566#testEnumACreatorModeDelegating'",
+   "exit": 0,
+   "seconds": 10.4,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "hits",
+    "hits": 1,
+    "exit_code": null,
+    "seconds": 0.718,
+    "warnings": []
+   },
+   "values": {
+    "read": 3,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "p",
+      "value": "ReaderBasedJsonParser@981"
+     },
+     {
+      "selector": "ctxt",
+      "value": "DefaultDeserializationContext$Impl@982"
+     },
+     {
+      "selector": "this",
+      "value": "FactoryBasedEnumDeserializer@983"
+     }
+    ]
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:03:31+00:00"
+}

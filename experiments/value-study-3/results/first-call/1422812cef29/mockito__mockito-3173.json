@@ -1,0 +1,95 @@
+{
+ "bug": "mockito__mockito-3173",
+ "language": "java",
+ "image": "peeky-study/mockito__mockito-3173:peeky-r3",
+ "image_id": "sha256:01dd7cc5814404089b7bccaf1847efe9b25526f9b6121f3b414dd05ed10213c6",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:04:41+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the changed condition in the isMockConstruction predicate (first code hunk)",
+   "at": "src/main/java/org/mockito/internal/creation/bytebuddy/InlineDelegateByteBuddyMockMaker.java:275",
+   "test_command": "./gradlew --no-daemon --offline --no-build-cache :java21:test --tests org.mockito.java21.RecordTest",
+   "captures": [
+    "isSuspended",
+    "currentConstruction",
+    "isCallFromSubclassConstructor",
+    "type"
+   ],
+   "command": "peeky probe . --at src/main/java/org/mockito/internal/creation/bytebuddy/InlineDelegateByteBuddyMockMaker.java:275 --capture isSuspended,currentConstruction,isCallFromSubclassConstructor,type --timeout 300 --json --test -- ./gradlew --no-daemon --offline --no-build-cache :java21:test --tests org.mockito.java21.RecordTest",
+   "exit": 0,
+   "seconds": 11.4,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "hits",
+    "hits": 1,
+    "exit_code": null,
+    "seconds": 1.201,
+    "warnings": []
+   },
+   "values": {
+    "read": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "isSuspended",
+      "value": "ThreadLocal$SuppliedThreadLocal@3114"
+     },
+     {
+      "selector": "currentConstruction",
+      "value": "ThreadLocal@3115"
+     },
+     {
+      "selector": "isCallFromSubclassConstructor",
+      "value": "StackWalkerChecker@3116"
+     },
+     {
+      "selector": "type",
+      "value": "Class (AbstractCollection)@3111"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  },
+  {
+   "why": "the changed mockitoConstruction.set(true) in newInstance's construction callback (last code hunk)",
+   "at": "src/main/java/org/mockito/internal/creation/bytebuddy/InlineDelegateByteBuddyMockMaker.java:650",
+   "test_command": "./gradlew --no-daemon --offline --no-build-cache :java21:test --tests org.mockito.java21.RecordTest",
+   "captures": [
+    "callback",
+    "this"
+   ],
+   "command": "peeky probe . --at src/main/java/org/mockito/internal/creation/bytebuddy/InlineDelegateByteBuddyMockMaker.java:650 --capture callback,this --timeout 300 --json --test -- ./gradlew --no-daemon --offline --no-build-cache :java21:test --tests org.mockito.java21.RecordTest",
+   "exit": 0,
+   "seconds": 9.7,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "hits",
+    "hits": 1,
+    "exit_code": null,
+    "seconds": 1.222,
+    "warnings": []
+   },
+   "values": {
+    "read": 2,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "callback",
+      "value": "InstrumentationMemberAccessor$$Lambda/0x00000028012352f8@3125"
+     },
+     {
+      "selector": "this",
+      "value": "InlineDelegateByteBuddyMockMaker@3126"
+     }
+    ]
+   },
+   "leftover_processes": 2
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:05:02+00:00"
+}

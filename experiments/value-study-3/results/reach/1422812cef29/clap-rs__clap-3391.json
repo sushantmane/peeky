@@ -1,0 +1,76 @@
+{
+ "bug": "clap-rs__clap-3391",
+ "language": "rust",
+ "category": "E",
+ "image": "peeky-study/clap-rs__clap-3391:peeky-r3",
+ "image_id": "sha256:5fd5b34c4325f2506198bbc718216a962999bcfe4bc2093d764060914de69b6e",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:56:03+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed `let mut sorted` binding in Error::invalid_value (first code hunk)",
+   "at": "src/parse/errors.rs:645",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at src/parse/errors.rs:645 --name reach --timeout 300 --json -- --exact possible_values::escaped_possible_values_output --test-threads=1",
+     "exit": 2,
+     "seconds": 1.6
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "BUILD_FAILED",
+    "message": "The build failed: cargo exited with code 101\nerror: specification `clap` is ambiguous\nhelp: re-run this command with one of the following specifications\n  clap@2.34.0\n  clap@3.0.14",
+    "hint": "Fix the error the compiler reports and run again. With --old/--new it is the edit that does not build; your files were not changed.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "gold",
+   "why": "the changed info.extend(sorted) in Error::invalid_value (last code hunk)",
+   "at": "src/parse/errors.rs:684",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at src/parse/errors.rs:684 --name reach --timeout 300 --json -- --exact possible_values::escaped_possible_values_output --test-threads=1",
+     "exit": 2,
+     "seconds": 1.1
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "BUILD_FAILED",
+    "message": "The build failed: cargo exited with code 101\nerror: specification `clap` is ambiguous\nhelp: re-run this command with one of the following specifications\n  clap@2.34.0\n  clap@3.0.14",
+    "hint": "Fix the error the compiler reports and run again. With --old/--new it is the edit that does not build; your files were not changed.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "assertion",
+   "why": "compare_output's assert_eq, the first assertion: the test's assert! calls compare_output first",
+   "at": "tests/builder/utils.rs:42",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tests/builder/utils.rs:42 --name reach --timeout 300 --json -- --exact possible_values::escaped_possible_values_output --test-threads=1",
+     "exit": 2,
+     "seconds": 1.1
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "BUILD_FAILED",
+    "message": "The build failed: cargo exited with code 101\nerror: specification `clap` is ambiguous\nhelp: re-run this command with one of the following specifications\n  clap@2.34.0\n  clap@3.0.14",
+    "hint": "Fix the error the compiler reports and run again. With --old/--new it is the edit that does not build; your files were not changed.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:56:07+00:00"
+}

@@ -1,0 +1,109 @@
+{
+ "bug": "astropy__astropy-8872",
+ "language": "python",
+ "image": "peeky-study/astropy__astropy-8872:peeky-r3",
+ "image_id": "sha256:e2872295bad8a3aedc601386594211854b79690df3fa72bd0357423f5ad869c1",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:52:21+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the changed float-cast condition for Quantity input in Quantity.__new__ (first code hunk; the first hunk is docstring)",
+   "at": "astropy/units/quantity.py:299",
+   "test_command": "python -m pytest -q -p no:cacheprovider astropy/units/tests/test_quantity.py::TestQuantityCreation::test_preserve_dtype",
+   "captures": [
+    "copy",
+    "dtype",
+    "ndmin",
+    "order"
+   ],
+   "command": "peeky probe . --at astropy/units/quantity.py:299 --capture copy,dtype,ndmin,order --timeout 300 --json --test -- python -m pytest -q -p no:cacheprovider astropy/units/tests/test_quantity.py::TestQuantityCreation::test_preserve_dtype",
+   "exit": 0,
+   "seconds": 2.9,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "exit",
+    "hits": 1,
+    "exit_code": 1,
+    "seconds": 2.658,
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "values": {
+    "read": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "copy",
+      "value": "True"
+     },
+     {
+      "selector": "dtype",
+      "value": "None"
+     },
+     {
+      "selector": "ndmin",
+      "value": "0"
+     },
+     {
+      "selector": "order",
+      "value": "None"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  },
+  {
+   "why": "the changed default float-cast condition at the end of Quantity.__new__ (last code hunk)",
+   "at": "astropy/units/quantity.py:380",
+   "test_command": "python -m pytest -q -p no:cacheprovider astropy/units/tests/test_quantity.py::TestQuantityCreation::test_preserve_dtype",
+   "captures": [
+    "copy",
+    "dtype",
+    "ndmin",
+    "order"
+   ],
+   "command": "peeky probe . --at astropy/units/quantity.py:380 --capture copy,dtype,ndmin,order --timeout 300 --json --test -- python -m pytest -q -p no:cacheprovider astropy/units/tests/test_quantity.py::TestQuantityCreation::test_preserve_dtype",
+   "exit": 0,
+   "seconds": 2.7,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "exit",
+    "hits": 1,
+    "exit_code": 1,
+    "seconds": 2.487,
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "values": {
+    "read": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "copy",
+      "value": "True"
+     },
+     {
+      "selector": "dtype",
+      "value": "None"
+     },
+     {
+      "selector": "ndmin",
+      "value": "0"
+     },
+     {
+      "selector": "order",
+      "value": "None"
+     }
+    ]
+   },
+   "leftover_processes": 2
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:52:27+00:00"
+}

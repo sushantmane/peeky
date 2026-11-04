@@ -1,0 +1,120 @@
+{
+ "bug": "BurntSushi__ripgrep-2576",
+ "language": "rust",
+ "category": "D",
+ "image": "peeky-study/burntsushi__ripgrep-2576:peeky-r3",
+ "image_id": "sha256:582e55df34b27803c17dabc406f3f4635151fff4e5f47528506ab1c3297cc539",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:29:18+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed decode_utf8 line in WordMatcher::fast_find (the only code hunk; the first hunk adds a comment); the test's haystack is under /root/reach/rg, which rg searches as the test's directory",
+   "at": "crates/regex/src/word.rs:139",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/bin.json --build --at crates/regex/src/word.rs:139 --name reach --timeout 300 --json -- --no-filename --no-unicode -w -o '(\\w+\\.)*domain\\.(\\w+)' /root/reach/rg",
+     "exit": 0,
+     "seconds": 16.6
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 2.0
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/crates/regex/src/word.rs:139",
+    "function": "grep_regex::word::WordMatcher::fast_find::h5f634be4a97aab50"
+   },
+   "moved": false,
+   "values": {
+    "shown": 5,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "self",
+      "value": "0x0000aaaaab2d5e08"
+     },
+     {
+      "name": "haystack",
+      "value": "&[u8] @ 0xfffff7db9e78"
+     },
+     {
+      "name": "at",
+      "value": "16"
+     },
+     {
+      "name": "input",
+      "value": "<not shown: its type can hold a pointer>"
+     },
+     {
+      "name": "cand",
+      "value": "grep_matcher::Match @ 0xfffff7db9db8"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 1
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "tests/regression.rs:1189",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tests/regression.rs:1189 --name reach --timeout 300 --json -- --exact regression::r2574 --test-threads=1",
+     "exit": 0,
+     "seconds": 17.4
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 3.9
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/tests/regression.rs:1190",
+    "function": "integration::regression::r2574::_$u7b$$u7b$closure$u7d$$u7d$::h0318a056ce5ae57e",
+    "warnings": [
+     "The debugger moved the breakpoint from line 1189 to line 1190 (line 1189 has no code of its own); values are from line 1190. Choose a line from `peeky describe`."
+    ]
+   },
+   "moved": true,
+   "values": {
+    "shown": 1,
+    "withheld": 2,
+    "sample": [
+     {
+      "name": "<null>",
+      "value": "0x0000000000000001"
+     }
+    ],
+    "withheld_sample": [
+     {
+      "name": "dir",
+      "value": "integration::util::Dir @ 0xfffff7dbdca8",
+      "stale": "True"
+     },
+     {
+      "name": "cmd",
+      "value": "integration::util::TestCommand @ 0xfffff7dbdce0",
+      "stale": "True"
+     }
+    ]
+   },
+   "leftover_processes": 2
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:29:59+00:00"
+}

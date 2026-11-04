@@ -1,0 +1,71 @@
+{
+ "bug": "fasterxml__jackson-databind-3509",
+ "language": "java",
+ "image": "peeky-study/fasterxml__jackson-databind-3509:peeky-r3",
+ "image_id": "sha256:3cb666951e6abd8b932953fe4d19419c326d4a82baacb43a5a32a193b1d79a16",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:01:14+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "first code hunk, in FloatDeserializer._parseFloat: the statement after the inserted ID_NUMBER_INT case (the hunk also removes the old case label at 615, which holds no statement)",
+   "at": "src/main/java/com/fasterxml/jackson/databind/deser/std/NumberDeserializers.java:616",
+   "test_command": "mvn test -B -o '-Dtest=com.fasterxml.jackson.databind.convert.CoerceIntToFloatTest#testCoerceConfigToNull'",
+   "captures": [
+    "p",
+    "ctxt",
+    "this"
+   ],
+   "command": "peeky probe . --at src/main/java/com/fasterxml/jackson/databind/deser/std/NumberDeserializers.java:616 --capture p,ctxt,this --timeout 300 --json --test -- mvn test -B -o '-Dtest=com.fasterxml.jackson.databind.convert.CoerceIntToFloatTest#testCoerceConfigToNull'",
+   "exit": 0,
+   "seconds": 8.2,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "hits",
+    "hits": 1,
+    "exit_code": null,
+    "seconds": 0.623,
+    "warnings": []
+   },
+   "values": {
+    "read": 3,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "p",
+      "value": "ReaderBasedJsonParser@823"
+     },
+     {
+      "selector": "ctxt",
+      "value": "DefaultDeserializationContext$Impl@824"
+     },
+     {
+      "selector": "this",
+      "value": "NumberDeserializers$FloatDeserializer@825"
+     }
+    ]
+   },
+   "leftover_processes": 0
+  },
+  {
+   "why": "last code hunk, in _parseDoublePrimitive: the statement after the inserted coercion check (the hunk after it adds a new method; LogicalType.java changes a comment)",
+   "at": "src/main/java/com/fasterxml/jackson/databind/deser/std/StdDeserializer.java:1109",
+   "test_command": "mvn test -B -o '-Dtest=com.fasterxml.jackson.databind.convert.CoerceIntToFloatTest#testCoerceConfigToNull'",
+   "captures": [],
+   "command": "peeky probe . --at src/main/java/com/fasterxml/jackson/databind/deser/std/StdDeserializer.java:1109 --timeout 300 --json --test -- mvn test -B -o '-Dtest=com.fasterxml.jackson.databind.convert.CoerceIntToFloatTest#testCoerceConfigToNull'",
+   "exit": 1,
+   "seconds": 8.8,
+   "outcome": "no stop",
+   "detail": {
+    "code": "NO_STOP",
+    "message": "The program finished without stopping at src/main/java/com/fasterxml/jackson/databind/deser/std/StdDeserializer.java:1109; check `peeky describe` for executable lines",
+    "hint": "Pick a line the program executes; see `peeky describe`."
+   },
+   "stderr_tail": "peeky: test: mvn test -B -o '-Dtest=com.fasterxml.jackson.databind.convert.CoerceIntToFloatTest#testCoerceConfigToNull'\npeeky: started maven; its output goes to /root/.peeky/tests/java-test-e1779edf93f7.log\npeeky: the test JVM (pid 214) waits on port 34253; attaching\npeeky: started; breakpoint src/main/java/com/fasterxml/jackson/databind/deser/std/StdDeserializer.java:1109 pending until its class or module loads\npeeky: waiting for the program to reach it...\npeeky: breakpoint verified\npeeky: program finished after 0 hit(s)\n",
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:01:32+00:00"
+}

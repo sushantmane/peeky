@@ -1,0 +1,128 @@
+{
+ "bug": "ponylang__ponyc-4583",
+ "language": "c",
+ "category": "D",
+ "image": "peeky-study/ponylang__ponyc-4583:peeky-r3",
+ "image_id": "sha256:be7982dd0728dfe081c3e63b41a106aa249510c9d92a1dc956f7f0e20743eb16",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:28:18+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [
+  {
+   "command": "mkdir -p build-peeky/full-program-tests && build-peeky/debug/ponyc --debug -o build-peeky/full-program-tests test/full-program-tests/regression-4582 > /root/reach/compile.log 2>&1; echo exit $?; tail -3 /root/reach/compile.log",
+   "exit": 0,
+   "seconds": 1.5,
+   "output": "exit 0\nVerifying\nWriting build-peeky/full-program-tests/regression-4582.o\nLinking build-peeky/full-program-tests/regression-4582\n"
+  }
+ ],
+ "points": [
+  {
+   "role": "gold",
+   "why": "first hunk that changes a statement (the one before it changes read_msg's signature): the ACK sent for a CNF in read_msg (509 is a comment)",
+   "at": "src/libponyrt/sched/scheduler.c:510",
+   "commands": [
+    {
+     "command": "peeky session start . --binary build-peeky/full-program-tests/regression-4582 --at src/libponyrt/sched/scheduler.c:510 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 2.3
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/libponyrt/sched/scheduler.c:510",
+    "function": "read_msg"
+   },
+   "moved": false,
+   "values": {
+    "shown": 1,
+    "withheld": 2,
+    "sample": [
+     {
+      "name": "sched",
+      "value": "0x0000fffff7bfdb80"
+     }
+    ],
+    "withheld_sample": [
+     {
+      "name": "m",
+      "value": "None",
+      "unavailable": "True",
+      "withheld": "True",
+      "reason": "declared on line 473, but a jump (a `switch` to its `case`, or a `goto`) can reach the label on line 491 without running the declaration, so it may not be initialized here: its storage may hold leftovers"
+     },
+     {
+      "name": "run_queue_changed",
+      "value": "None",
+      "unavailable": "True",
+      "withheld": "True",
+      "reason": "declared on line 475, but a jump (a `switch` to its `case`, or a `goto`) can reach the label on line 491 without running the declaration, so it may not be initialized here: its storage may hold leftovers"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  },
+  {
+   "role": "gold",
+   "why": "last hunk: the changed read_msg call in run_pinned_actors",
+   "at": "src/libponyrt/sched/scheduler.c:1422",
+   "commands": [
+    {
+     "command": "peeky session start . --binary build-peeky/full-program-tests/regression-4582 --at src/libponyrt/sched/scheduler.c:1422 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 2.3
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/libponyrt/sched/scheduler.c:1422",
+    "function": "run_pinned_actors"
+   },
+   "moved": false,
+   "values": {
+    "shown": 3,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "sched",
+      "value": "0x0000fffff7bffc00"
+     },
+     {
+      "name": "actor",
+      "value": "0x0000000000000000"
+     },
+     {
+      "name": "tsc",
+      "value": "872032330470734"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "outcome": "not attempted",
+   "detail": {
+    "reason": "the test is a Pony program (test/full-program-tests/regression-4582) whose exit code the full-program runner, itself a Pony program, compares with expected-exit-code.txt; neither is the project's C code"
+   }
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:28:26+00:00"
+}

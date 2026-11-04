@@ -1,0 +1,56 @@
+{
+ "bug": "matplotlib__matplotlib-21568",
+ "language": "python",
+ "image": "peeky-study/matplotlib__matplotlib-21568:peeky-r3",
+ "image_id": "sha256:d77b69cda507aaba95a626d9d04391fd54cbb8eafb96fc60371e4361a95cc105",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:52:53+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the first statement the only code hunk changes, in _wrap_in_tex (the line before it is a comment)",
+   "at": "lib/matplotlib/dates.py:599",
+   "test_command": "python -m pytest -q -p no:cacheprovider 'lib/matplotlib/tests/test_dates.py::test_date_formatter_usetex[delta2-expected2]'",
+   "captures": [
+    "p",
+    "ret_text",
+    "text"
+   ],
+   "command": "peeky probe . --at lib/matplotlib/dates.py:599 --capture p,ret_text,text --timeout 300 --json --test -- python -m pytest -q -p no:cacheprovider 'lib/matplotlib/tests/test_dates.py::test_date_formatter_usetex[delta2-expected2]'",
+   "exit": 0,
+   "seconds": 2.5,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "exit",
+    "hits": 1,
+    "exit_code": 1,
+    "seconds": 2.356,
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "values": {
+    "read": 3,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "p",
+      "value": "'([a-zA-Z]+)'"
+     },
+     {
+      "selector": "ret_text",
+      "value": "'01-01 00'"
+     },
+     {
+      "selector": "text",
+      "value": "'01-01 00'"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:52:57+00:00"
+}

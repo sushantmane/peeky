@@ -1,0 +1,64 @@
+{
+ "bug": "nushell__nushell-11292",
+ "language": "rust",
+ "category": "E",
+ "image": "peeky-study/nushell__nushell-11292:peeky-r3",
+ "image_id": "sha256:33295ad47315f332272c03107697e79ea100eaa00bed157c39b60888fe67f4f2",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:55:50+00:00",
+ "needs": [],
+ "notes": "can_get_help::case_3 runs the nu binary (target/debug/nu, via assert_cmd) as `nu --no-std-lib <file>` with the script in /root/reach/help_t.nu; the gold points run that program. The test itself is a unit test of the nu binary, which a Peeky config can't run.",
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed call in NuHelpCompleter's flags-section closure (first code hunk)",
+   "at": "crates/nu-cli/src/menus/help_completions.rs:60",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/nu-cli.json --build --at crates/nu-cli/src/menus/help_completions.rs:60 --name reach --timeout 300 --json -- --no-std-lib /root/reach/help_t.nu",
+     "exit": 2,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "UNSUPPORTED",
+    "message": "Peeky doesn't build a workspace with [patch] (in /testbed/Cargo.toml): Cargo would build other sources than Cargo.lock names. Remove it, or make the patched crate a path dependency inside the workspace",
+    "hint": "Nothing was built. Change what the message names in the workspace or its configuration, or analyse another package.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "gold",
+   "why": "the first statement of Value::into_string_parsable, which the fix deletes (last code hunk; the lines above are docs and the signature)",
+   "at": "crates/nu-protocol/src/value/mod.rs:826",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/nu-protocol.json --build --at crates/nu-protocol/src/value/mod.rs:826 --name reach --timeout 300 --json -- --no-std-lib /root/reach/help_t.nu",
+     "exit": 2,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "UNSUPPORTED",
+    "message": "Peeky doesn't build a workspace with [patch] (in /testbed/Cargo.toml): Cargo would build other sources than Cargo.lock names. Remove it, or make the patched crate a path dependency inside the workspace",
+    "hint": "Nothing was built. Change what the message names in the workspace or its configuration, or analyse another package.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "outcome": "not attempted",
+   "detail": {
+    "reason": "the test is a unit test of the nu binary (src/tests.rs's run_cmd_and_assert, line 95); a Peeky config runs a binary, an integration test or a library's unit tests"
+   }
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:55:51+00:00"
+}

@@ -1,0 +1,76 @@
+{
+ "bug": "apache__druid-14092",
+ "language": "java",
+ "image": "peeky-study/apache__druid-14092:peeky-r3",
+ "image_id": "sha256:07ab4f89c5a8eccdf3394165824a803dcf794f54b9d7494537c58301642e614f",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:59:08+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the first statement the first code hunk removes: rebuilding the request with a re-resolved leader in go's IOException/ChannelException catch block",
+   "at": "server/src/main/java/org/apache/druid/discovery/DruidLeaderClient.java:157",
+   "test_command": "mvn test -B -o -pl server '-Dtest=org.apache.druid.discovery.DruidLeaderClientTest#test503ResponseFromServerAndCacheRefresh'",
+   "captures": [],
+   "command": "peeky probe . --at server/src/main/java/org/apache/druid/discovery/DruidLeaderClient.java:157 --timeout 300 --json --test -- mvn test -B -o -pl server '-Dtest=org.apache.druid.discovery.DruidLeaderClientTest#test503ResponseFromServerAndCacheRefresh'",
+   "exit": 1,
+   "seconds": 18.8,
+   "outcome": "no stop",
+   "detail": {
+    "code": "NO_STOP",
+    "message": "The program finished without stopping at server/src/main/java/org/apache/druid/discovery/DruidLeaderClient.java:157; check `peeky describe` for executable lines",
+    "hint": "Pick a line the program executes; see `peeky describe`."
+   },
+   "stderr_tail": "peeky: test: mvn test -B -o -pl server '-Dtest=org.apache.druid.discovery.DruidLeaderClientTest#test503ResponseFromServerAndCacheRefresh'\npeeky: started maven; its output goes to /root/.peeky/tests/java-test-269e972debdb.log\npeeky: the test JVM started; waiting for its debug agent\npeeky: the test JVM (pid 151) waits on port 35701; attaching\npeeky: started; breakpoint server/src/main/java/org/apache/druid/discovery/DruidLeaderClient.java:157 pending until its class or module loads\npeeky: waiting for the program to reach it...\npeeky: breakpoint verified\npeeky: program finished after 0 hit(s)\n",
+   "leftover_processes": 0
+  },
+  {
+   "why": "the statement after the inserted 503/504 retry branch in go (last code hunk): returning the response to the caller",
+   "at": "server/src/main/java/org/apache/druid/discovery/DruidLeaderClient.java:217",
+   "test_command": "mvn test -B -o -pl server '-Dtest=org.apache.druid.discovery.DruidLeaderClientTest#test503ResponseFromServerAndCacheRefresh'",
+   "captures": [
+    "request",
+    "responseHandler",
+    "counter",
+    "fullResponseHolder"
+   ],
+   "command": "peeky probe . --at server/src/main/java/org/apache/druid/discovery/DruidLeaderClient.java:217 --capture request,responseHandler,counter,fullResponseHolder --timeout 300 --json --test -- mvn test -B -o -pl server '-Dtest=org.apache.druid.discovery.DruidLeaderClientTest#test503ResponseFromServerAndCacheRefresh'",
+   "exit": 0,
+   "seconds": 11.0,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "hits",
+    "hits": 1,
+    "exit_code": null,
+    "seconds": 2.539,
+    "warnings": []
+   },
+   "values": {
+    "read": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "request",
+      "value": "Request@6839"
+     },
+     {
+      "selector": "responseHandler",
+      "value": "StringFullResponseHandler@6840"
+     },
+     {
+      "selector": "counter",
+      "value": "0"
+     },
+     {
+      "selector": "fullResponseHolder",
+      "value": "StringFullResponseHolder@6841"
+     }
+    ]
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:59:38+00:00"
+}

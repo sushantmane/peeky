@@ -1,0 +1,152 @@
+{
+ "bug": "jqlang__jq-2840",
+ "language": "c",
+ "category": "E",
+ "image": "peeky-study/jqlang__jq-2840:peeky-r3",
+ "image_id": "sha256:961638351d7cccf22bdb206f59db9c81207e52854680a620a64bf24c22e3c8e2",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:21:33+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the fix's only hunk removes lines 697-704 of jq_next's INDEX case; 697 is a comment, so the point is its first statement, the `if` at 698",
+   "at": "src/execute.c:698",
+   "commands": [
+    {
+     "command": "peeky session start . --binary ./jq --at src/execute.c:698 --name reach --timeout 300 --json -- -L tests/modules --run-tests tests/jq.test",
+     "exit": 0,
+     "seconds": 2.4
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.3
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/execute.c:698",
+    "function": "jq_next"
+   },
+   "moved": false,
+   "values": {
+    "shown": 8,
+    "withheld": 1,
+    "sample": [
+     {
+      "name": "jq",
+      "value": "0x0000aaaaaabbf950"
+     },
+     {
+      "name": "cfunc_input",
+      "value": "[{kind_flags = '\\xe0', pad_ = '\\xeb', offset = 43707, size = 43690, u = <union>}, {kind_flags = '\\x02', pad_ = '\\0', offset = 0, size = 0, u = <union>}, {kind_f"
+     },
+     {
+      "name": "pc",
+      "value": "0x0000aaaaaabea052"
+     },
+     {
+      "name": "raising",
+      "value": "0"
+     },
+     {
+      "name": "backtracking",
+      "value": "0"
+     },
+     {
+      "name": "opcode",
+      "value": "10"
+     }
+    ],
+    "withheld_sample": [
+     {
+      "name": "v",
+      "value": "{kind_flags = '\\xc8', pad_ = '\\x95', offset = 43691, size = 43690, u = <union>}",
+      "note": "may be leftovers, or its value from before a `longjmp`: declared at line 705, below this stop, and any call above the stop may return twice (src/parser.c is a unit Peeky doesn't read, and 1 more; a config's \"returns_twice\" can name the functions that do), so Peeky cannot tell whether its declaration"
+     }
+    ]
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "assertion",
+   "why": "the harness's comparison of a case's expected and actual output (the test is a case in tests/jq.test, run by tests/jqtest)",
+   "at": "src/jq_test.c:204",
+   "commands": [
+    {
+     "command": "peeky session start . --binary ./jq --at src/jq_test.c:204 --name reach --timeout 300 --json -- -L tests/modules --run-tests tests/jq.test",
+     "exit": 0,
+     "seconds": 2.5
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.4
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/jq_test.c:204",
+    "function": "run_jq_tests"
+   },
+   "moved": false,
+   "values": {
+    "shown": 22,
+    "withheld": 3,
+    "sample": [
+     {
+      "name": "lib_dirs",
+      "value": "{kind_flags = '\\x86', pad_ = '\\0', offset = 0, size = 1, u = <union>}"
+     },
+     {
+      "name": "verbose",
+      "value": "0"
+     },
+     {
+      "name": "testdata",
+      "value": "0x0000aaaaaabbf770"
+     },
+     {
+      "name": "skip",
+      "value": "-1"
+     },
+     {
+      "name": "take",
+      "value": "-1"
+     },
+     {
+      "name": "prog",
+      "value": "\"true\" (then a NUL and 4091 bytes not shown)"
+     }
+    ],
+    "withheld_sample": [
+     {
+      "name": "total_skipped",
+      "value": "1633771873",
+      "note": "may be leftovers, or its value from before a `longjmp`: declared at line 235, below this stop, and any call above the stop may return twice (src/parser.c is a unit Peeky doesn't read, and 1 more; a config's \"returns_twice\" can name the functions that do), so Peeky cannot tell whether its declaration"
+     },
+     {
+      "name": "as_string",
+      "value": "{kind_flags = 'a', pad_ = 'a', offset = 24929, size = 1633771873, u = <union>}",
+      "note": "may be leftovers, or its value from before a `longjmp`: declared at line 212, below this stop, and any call above the stop may return twice (src/parser.c is a unit Peeky doesn't read, and 1 more; a config's \"returns_twice\" can name the functions that do), so Peeky cannot tell whether its declaration"
+     },
+     {
+      "name": "reparsed",
+      "value": "{kind_flags = 'a', pad_ = 'a', offset = 24929, size = 1633771873, u = <union>}",
+      "note": "may be leftovers, or its value from before a `longjmp`: declared at line 213, below this stop, and any call above the stop may return twice (src/parser.c is a unit Peeky doesn't read, and 1 more; a config's \"returns_twice\" can name the functions that do), so Peeky cannot tell whether its declaration"
+     }
+    ]
+   },
+   "leftover_processes": 3
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:21:40+00:00"
+}

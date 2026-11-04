@@ -1,0 +1,135 @@
+{
+ "bug": "pytest-dev__pytest-10356",
+ "language": "python",
+ "category": "E",
+ "image": "peeky-study/pytest-dev__pytest-10356:peeky-r3",
+ "image_id": "sha256:b3645325b32b18c1f09476ccdc6954bbc181607f7272df0f10e20a0f94911f19",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:52:50+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed lookup of pytestmark in get_unpacked_marks (the first hunk)",
+   "at": "src/_pytest/mark/structures.py:360",
+   "commands": [
+    {
+     "command": "peeky session start . --run src/pytest/__main__.py --at src/_pytest/mark/structures.py:360 --name reach --timeout 300 --json -- -q -p no:cacheprovider testing/test_mark.py::test_mark_mro",
+     "exit": 0,
+     "seconds": 0.9
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/_pytest/mark/structures.py:360",
+    "function": "get_unpacked_marks",
+    "warnings": [
+     "The script that runs imports pytest. If it runs pytest, pytest rewrites the test files' asserts, so their code differs from the source Peeky reads, and a line there may stop more than once per pass. Use --run-module pytest instead, which turns rewriting off"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 0,
+    "withheld": 0,
+    "sample": [],
+    "withheld_sample": []
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "gold",
+   "why": "the changed assignment in store_mark (the last hunk)",
+   "at": "src/_pytest/mark/structures.py:391",
+   "commands": [
+    {
+     "command": "peeky session start . --run src/pytest/__main__.py --at src/_pytest/mark/structures.py:391 --name reach --timeout 300 --json -- -q -p no:cacheprovider testing/test_mark.py::test_mark_mro",
+     "exit": 0,
+     "seconds": 0.8
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/_pytest/mark/structures.py:391",
+    "function": "store_mark",
+    "warnings": [
+     "The script that runs imports pytest. If it runs pytest, pytest rewrites the test files' asserts, so their code differs from the source Peeky reads, and a line there may stop more than once per pass. Use --run-module pytest instead, which turns rewriting off"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 1,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "mark",
+      "value": "Mark(name='parametrize', args=('attr', ['mark', 'param']), kwargs={})"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 4
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "testing/test_mark.py:1133",
+   "commands": [
+    {
+     "command": "peeky session start . --run src/pytest/__main__.py --at testing/test_mark.py:1133 --name reach --timeout 300 --json -- -q -p no:cacheprovider testing/test_mark.py::test_mark_mro",
+     "exit": 0,
+     "seconds": 0.9
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/testing/test_mark.py:1133",
+    "function": "test_mark_mro",
+    "warnings": [
+     "The script that runs imports pytest. If it runs pytest, pytest rewrites the test files' asserts, so their code differs from the source Peeky reads, and a line there may stop more than once per pass. Use --run-module pytest instead, which turns rewriting off"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 2,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "all_marks",
+      "value": "<generator object normalize_mark_list at 0xffff80c58840>"
+     },
+     {
+      "name": "xfail",
+      "value": "MarkDecorator(mark=Mark(name='xfail', args=(), kwargs={}))"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 6
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:52:54+00:00"
+}

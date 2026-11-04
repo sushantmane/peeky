@@ -1,0 +1,59 @@
+{
+ "bug": "elastic__logstash-15928",
+ "language": "java",
+ "image": "peeky-study/elastic__logstash-15928:peeky-r3",
+ "image_id": "sha256:890106f56f4e748e5c86a2de2f462e88f19eabcc675a4c42456e11bbb6145bf5",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:59:56+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the changed println of the final options in handleJvmOptions (the only code hunk)",
+   "at": "tools/jvm-options-parser/src/main/java/org/logstash/launchers/JvmOptionsParser.java:183",
+   "test_command": "./gradlew --no-daemon --offline :jvm-options-parser:test --tests org.logstash.launchers.JvmOptionsParserTest.testNettyMaxOrderRuleAppliesIfNotAlreadyDefinedExplicitlyByUser",
+   "captures": [
+    "jvmOptionsFile",
+    "lsJavaOpts",
+    "javaMajorVersion",
+    "jvmOptionsContent"
+   ],
+   "command": "peeky probe . --at tools/jvm-options-parser/src/main/java/org/logstash/launchers/JvmOptionsParser.java:183 --capture jvmOptionsFile,lsJavaOpts,javaMajorVersion,jvmOptionsContent --timeout 300 --json --test -- ./gradlew --no-daemon --offline :jvm-options-parser:test --tests org.logstash.launchers.JvmOptionsParserTest.testNettyMaxOrderRuleAppliesIfNotAlreadyDefinedExplicitlyByUser",
+   "exit": 0,
+   "seconds": 7.6,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "hits",
+    "hits": 1,
+    "exit_code": null,
+    "seconds": 0.349,
+    "warnings": []
+   },
+   "values": {
+    "read": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "jvmOptionsFile",
+      "value": "Optional@1505"
+     },
+     {
+      "selector": "lsJavaOpts",
+      "value": "\"-Dcli.opts=something\""
+     },
+     {
+      "selector": "javaMajorVersion",
+      "value": "11"
+     },
+     {
+      "selector": "jvmOptionsContent",
+      "value": "LinkedHashSet@1507"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:00:04+00:00"
+}

@@ -1,0 +1,79 @@
+{
+ "bug": "sphinx-doc__sphinx-7462",
+ "language": "python",
+ "image": "peeky-study/sphinx-doc__sphinx-7462:peeky-r3",
+ "image_id": "sha256:7cc5868983a99cbb97fa1f9e776a9d9db418ad48c6d196b4208ebb428cdcf3a8",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:53:25+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the removed result = [] that starts the ast.Tuple branch of _parse_annotation's unparse (the first hunk)",
+   "at": "sphinx/domains/python.py:117",
+   "test_command": "python -m pytest -q -p no:cacheprovider tests/test_domain_py.py::test_parse_annotation",
+   "captures": [
+    "node"
+   ],
+   "command": "peeky probe . --at sphinx/domains/python.py:117 --capture node --timeout 300 --json --test -- python -m pytest -q -p no:cacheprovider tests/test_domain_py.py::test_parse_annotation",
+   "exit": 0,
+   "seconds": 2.0,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "exit",
+    "hits": 1,
+    "exit_code": 1,
+    "seconds": 1.831,
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "values": {
+    "read": 1,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "node",
+      "value": "<ast.Tuple object at 0xffff9fb7add0>"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  },
+  {
+   "why": "the changed ast.Tuple return in pycode.ast.unparse (the last hunk)",
+   "at": "sphinx/pycode/ast.py:117",
+   "test_command": "python -m pytest -q -p no:cacheprovider 'tests/test_pycode_ast.py::test_unparse[()-()]'",
+   "captures": [
+    "node"
+   ],
+   "command": "peeky probe . --at sphinx/pycode/ast.py:117 --capture node --timeout 300 --json --test -- python -m pytest -q -p no:cacheprovider 'tests/test_pycode_ast.py::test_unparse[()-()]'",
+   "exit": 0,
+   "seconds": 1.8,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "exit",
+    "hits": 1,
+    "exit_code": 1,
+    "seconds": 1.607,
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "values": {
+    "read": 1,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "node",
+      "value": "<ast.Tuple object at 0xffff93fea5d0>"
+     }
+    ]
+   },
+   "leftover_processes": 2
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:53:29+00:00"
+}

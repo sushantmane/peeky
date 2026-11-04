@@ -1,0 +1,44 @@
+{
+ "bug": "nushell__nushell-10629",
+ "language": "rust",
+ "category": "C",
+ "image": "peeky-study/nushell__nushell-10629:peeky-r3",
+ "image_id": "sha256:314eaec967bc1b01f64e27f2ddbfe70a01ca255011332fcc74ac92bd4c863ee4",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:55:49+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed empty-fields check in type_compatible's is_compatible closure (the only hunk)",
+   "at": "crates/nu-parser/src/type_check.rs:13",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/bin.json --build --at crates/nu-parser/src/type_check.rs:13 --name reach --timeout 300 --json -- --no-std-lib /root/reach/test.nu",
+     "exit": 2,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "UNSUPPORTED",
+    "message": "Peeky doesn't build a workspace with [patch] (in /testbed/Cargo.toml): Cargo would build other sources than Cargo.lock names. Remove it, or make the patched crate a path dependency inside the workspace",
+    "hint": "Nothing was built. Change what the message names in the workspace or its configuration, or analyse another package.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "assertion",
+   "why": "run_cmd_and_assert's first assertion, which the first failing test reaches through run_test",
+   "outcome": "not attempted",
+   "detail": {
+    "reason": "the test is a unit test of the nu binary (src/main.rs); a Peeky config runs a binary, an integration test or a library's unit tests, not a binary's unit tests"
+   }
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:55:50+00:00"
+}

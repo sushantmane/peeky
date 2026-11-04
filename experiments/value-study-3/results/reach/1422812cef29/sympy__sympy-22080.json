@@ -1,0 +1,117 @@
+{
+ "bug": "sympy__sympy-22080",
+ "language": "python",
+ "category": "E",
+ "image": "peeky-study/sympy__sympy-22080:peeky-r3",
+ "image_id": "sha256:a3e243ce49f4f0e6769fa34ccb944914093e18b46a3d63da244518fca6720a9f",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:53:51+00:00",
+ "needs": [],
+ "notes": "bin/test has no .py suffix, so prepare copies it unchanged to bin/reach_test.py, beside the get_sympy.py it imports, as sympy__sympy-17318's corrected run does (Peeky's --run needs a .py entry inside the root).",
+ "prepare": [
+  {
+   "command": "cp bin/test bin/reach_test.py && ls -l bin/reach_test.py",
+   "exit": 0,
+   "seconds": 0.0,
+   "output": "-rwxr-xr-x 1 root root 3991 Nov  4 07:53 bin/reach_test.py\n"
+  }
+ ],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed a_str computation in CodePrinter._print_Mul (the only code hunk that changes an executable statement; the others are an import and a precedence-table entry)",
+   "at": "sympy/printing/codeprinter.py:490",
+   "commands": [
+    {
+     "command": "peeky session start . --run bin/reach_test.py --at sympy/printing/codeprinter.py:490 --name reach --timeout 300 --json -- -C --verbose --no-subprocess sympy/codegen/tests/test_rewriting.py -k test_create_expand_pow_optimization",
+     "exit": 0,
+     "seconds": 0.9
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/sympy/printing/codeprinter.py:490",
+    "function": "_print_Mul"
+   },
+   "moved": false,
+   "values": {
+    "shown": 11,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "a",
+      "value": "[x, x, x, x]"
+     },
+     {
+      "name": "args",
+      "value": "[x, x, x, x]"
+     },
+     {
+      "name": "b",
+      "value": "[]"
+     },
+     {
+      "name": "c",
+      "value": "1"
+     },
+     {
+      "name": "e",
+      "value": "x*x*x*x"
+     },
+     {
+      "name": "expr",
+      "value": "x*x*x*x"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "sympy/codegen/tests/test_rewriting.py:262",
+   "commands": [
+    {
+     "command": "peeky session start . --run bin/reach_test.py --at sympy/codegen/tests/test_rewriting.py:262 --name reach --timeout 300 --json -- -C --verbose --no-subprocess sympy/codegen/tests/test_rewriting.py -k test_create_expand_pow_optimization",
+     "exit": 0,
+     "seconds": 0.9
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/sympy/codegen/tests/test_rewriting.py:262",
+    "function": "test_create_expand_pow_optimization"
+   },
+   "moved": false,
+   "values": {
+    "shown": 1,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "x",
+      "value": "x"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 4
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:53:54+00:00"
+}

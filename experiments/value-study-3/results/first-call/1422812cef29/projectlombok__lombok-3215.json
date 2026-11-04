@@ -1,0 +1,59 @@
+{
+ "bug": "projectlombok__lombok-3215",
+ "language": "java",
+ "image": "peeky-study/projectlombok__lombok-3215:peeky-r3",
+ "image_id": "sha256:02fc1b30b3e054351462f094b806abf0ef96bae8b0221e13b94fdf62f6981836",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:05:22+00:00",
+ "prepare": [
+  {
+   "command": "f=buildScripts/tests.ant.xml && { head -n -1 $f; cat <<'XML'; tail -n 1 $f; } > /root/reach/tests.ant.xml && cp /root/reach/tests.ant.xml $f\n<target name=\"test.instance\" depends=\"test.compile, test.formatter.compile\">\n  <junit printsummary=\"yes\" fork=\"true\" forkmode=\"once\" haltonfailure=\"no\">\n    <jvmarg value=\"-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=*:5005\" />\n    <formatter classname=\"lombok.ant.SimpleTestFormatter\" usefile=\"false\" unless=\"tests.quiet\" />\n    <classpath location=\"build/ant\" />\n    <classpath refid=\"cp.test\" />\n    <classpath refid=\"cp.stripe\" />\n    <classpath refid=\"packing.basedirs.path\" />\n    <classpath location=\"build/tests\" />\n    <classpath location=\"build/teststubs\" />\n    <test name=\"lombok.transform.TestWithDelombok\" />\n  </junit>\n</target>\nXML",
+   "exit": 0,
+   "seconds": 0.0,
+   "output": ""
+  }
+ ],
+ "points": [
+  {
+   "why": "first code hunk (ecj handler; the hunk before it removes an import): the changed typeName read in gatherUsedTypeNames",
+   "at": "src/core/lombok/eclipse/handlers/HandleSuperBuilder.java:1103",
+   "test_command": "ant -noinput test.instance",
+   "captures": [],
+   "command": "peeky probe . --at src/core/lombok/eclipse/handlers/HandleSuperBuilder.java:1103 --timeout 300 --json --test -- ant -noinput test.instance",
+   "exit": 2,
+   "seconds": 0.1,
+   "outcome": "refused",
+   "detail": {
+    "code": "UNSUPPORTED",
+    "message": "--test can't run `ant`: Ant forks its test JVMs with no switch Peeky can add its debug agent to. Give the command that runs the one failing test: its binary with its arguments (C, C++), `python -m pytest \u2026`, `cargo test \u2026`, or the `java` command it runs",
+    "hint": "Nothing ran. Change the test command as the message says."
+   },
+   "stderr_tail": "peeky: [UNSUPPORTED] --test can't run `ant`: Ant forks its test JVMs with no switch Peeky can add its debug agent to. Give the command that runs the one failing test: its binary with its arguments (C, C++), `python -m pytest \u2026`, `cargo test \u2026`, or the `java` command it runs\n  hint: Nothing ran. Change the test command as the message says.\n",
+   "leftover_processes": 0
+  },
+  {
+   "why": "last code hunk (javac handler): the statement after the inserted extends/implements names in gatherUsedTypeNames",
+   "at": "src/core/lombok/javac/handlers/HandleSuperBuilder.java:1054",
+   "test_command": "ant -noinput test.instance",
+   "captures": [
+    "typeParams",
+    "td",
+    "usedNames",
+    "this"
+   ],
+   "command": "peeky probe . --at src/core/lombok/javac/handlers/HandleSuperBuilder.java:1054 --capture typeParams,td,usedNames,this --timeout 300 --json --test -- ant -noinput test.instance",
+   "exit": 2,
+   "seconds": 0.1,
+   "outcome": "refused",
+   "detail": {
+    "code": "UNSUPPORTED",
+    "message": "--test can't run `ant`: Ant forks its test JVMs with no switch Peeky can add its debug agent to. Give the command that runs the one failing test: its binary with its arguments (C, C++), `python -m pytest \u2026`, `cargo test \u2026`, or the `java` command it runs",
+    "hint": "Nothing ran. Change the test command as the message says."
+   },
+   "stderr_tail": "peeky: [UNSUPPORTED] --test can't run `ant`: Ant forks its test JVMs with no switch Peeky can add its debug agent to. Give the command that runs the one failing test: its binary with its arguments (C, C++), `python -m pytest \u2026`, `cargo test \u2026`, or the `java` command it runs\n  hint: Nothing ran. Change the test command as the message says.\n",
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:05:23+00:00"
+}

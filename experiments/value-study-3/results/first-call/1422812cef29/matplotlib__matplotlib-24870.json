@@ -1,0 +1,68 @@
+{
+ "bug": "matplotlib__matplotlib-24870",
+ "language": "python",
+ "image": "peeky-study/matplotlib__matplotlib-24870:peeky-r3",
+ "image_id": "sha256:e1c5aa4f8b3f0e100931311c86566b2bc0cd3f5d61744e2ccc44fcf1c7071086",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:53:05+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the changed default-levels condition in ContourSet._process_contour_level_args (first code hunk; its first changed line is the signature)",
+   "at": "lib/matplotlib/contour.py:1125",
+   "test_command": "python -m pytest -q -p no:cacheprovider lib/matplotlib/tests/test_contour.py::test_bool_autolevel",
+   "captures": [
+    "args",
+    "self"
+   ],
+   "command": "peeky probe . --at lib/matplotlib/contour.py:1125 --capture args,self --timeout 300 --json --test -- python -m pytest -q -p no:cacheprovider lib/matplotlib/tests/test_contour.py::test_bool_autolevel",
+   "exit": 0,
+   "seconds": 2.4,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "exit",
+    "hits": 1,
+    "exit_code": 1,
+    "seconds": 2.241,
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "values": {
+    "read": 2,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "args",
+      "value": "()"
+     },
+     {
+      "selector": "self",
+      "value": "<matplotlib.contour.QuadContourSet object at 0xffff5b304e10>"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  },
+  {
+   "why": "the changed _process_contour_level_args call in TriContourSet._contour_args (last code hunk)",
+   "at": "lib/matplotlib/tri/_tricontour.py:77",
+   "test_command": "python -m pytest -q -p no:cacheprovider lib/matplotlib/tests/test_contour.py::test_bool_autolevel",
+   "captures": [],
+   "command": "peeky probe . --at lib/matplotlib/tri/_tricontour.py:77 --timeout 300 --json --test -- python -m pytest -q -p no:cacheprovider lib/matplotlib/tests/test_contour.py::test_bool_autolevel",
+   "exit": 1,
+   "seconds": 2.1,
+   "outcome": "no stop",
+   "detail": {
+    "code": "NO_STOP",
+    "message": "The program failed (exit code 1) without stopping at lib/matplotlib/tri/_tricontour.py:77; its output says why",
+    "hint": "The program failed before it reached the line: read its output, and check its arguments (everything after `--`) and input."
+   },
+   "stderr_tail": "peeky: test: python -m pytest -q -p no:cacheprovider lib/matplotlib/tests/test_contour.py::test_bool_autolevel\npeeky: started; breakpoint lib/matplotlib/tri/_tricontour.py:77 verified\npeeky: waiting for the program to reach it...\npeeky: program finished after 0 hit(s)\n",
+   "leftover_processes": 2
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:53:10+00:00"
+}

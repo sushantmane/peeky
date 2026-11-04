@@ -1,0 +1,63 @@
+{
+ "bug": "BurntSushi__ripgrep-2576",
+ "language": "rust",
+ "image": "peeky-study/burntsushi__ripgrep-2576:peeky-r3",
+ "image_id": "sha256:582e55df34b27803c17dabc406f3f4635151fff4e5f47528506ab1c3297cc539",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T08:30:07+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the changed decode_utf8 line in WordMatcher::fast_find (the only code hunk; the first hunk adds a comment); the test's haystack is under /root/reach/rg, which rg searches as the test's directory",
+   "at": "crates/regex/src/word.rs:139",
+   "test_command": "cargo run --bin rg -- --no-filename --no-unicode -w -o '(\\w+\\.)*domain\\.(\\w+)' /root/reach/rg",
+   "captures": [
+    "self",
+    "haystack",
+    "at",
+    "input"
+   ],
+   "command": "peeky probe . --at crates/regex/src/word.rs:139 --capture self,haystack,at,input --timeout 300 --json --test -- cargo run --bin rg -- --no-filename --no-unicode -w -o '(\\w+\\.)*domain\\.(\\w+)' /root/reach/rg",
+   "exit": 0,
+   "seconds": 19.0,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "exit",
+    "hits": 1,
+    "exit_code": 0,
+    "seconds": 10.227,
+    "warnings": [
+     "input: This Rust value is not shown: its type can hold a pointer, and Peeky can't prove that what it would point at still stands. Read a plain function's own local where it is live, or capture what it holds where it is created. Peeky never follows a raw pointer, and follows another only to a value the MIR proves live, in the innermost frame of an unoptimized build, in a crate with no unsafe code (rust-cookbook 7.2).",
+     "Peeky builds the test with Cargo, and runs its executable itself, in environments of its own: Cargo and build scripts get none of your variables, and the test only PATH (the toolchain's directory, /usr/bin and /bin), LC_ALL=C, a HOME of Peeky's, CARGO_MANIFEST_DIR and, in an integration test, CARGO_BIN_EXE_<name>. `cargo test` would pass on your environment, and more CARGO_* variables: a test or build script that reads one may run otherwise"
+    ]
+   },
+   "values": {
+    "read": 3,
+    "withheld": 1,
+    "sample": [
+     {
+      "selector": "self",
+      "value": "0x0000aaaaab2d2db8"
+     },
+     {
+      "selector": "haystack",
+      "value": "&[u8] @ 0xfffff7db9e78"
+     },
+     {
+      "selector": "at",
+      "value": "16"
+     },
+     {
+      "selector": "input",
+      "value": "<not shown: its type can hold a pointer>",
+      "note": "This Rust value is not shown: its type can hold a pointer, and Peeky can't prove that what it would point at still stands. Read a plain function's own local where it is live, or capture what it holds where it is created. Peeky never follows a raw pointer, and follows another only to a value the MIR "
+     }
+    ]
+   },
+   "leftover_processes": 1
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T08:30:27+00:00"
+}

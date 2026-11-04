@@ -1,0 +1,148 @@
+{
+ "bug": "alibaba__fastjson2-82",
+ "language": "java",
+ "category": "E",
+ "image": "peeky-study/alibaba__fastjson2-82:peeky-r3",
+ "image_id": "sha256:3ab72f40445769123ff259bb07a9db8c5e1dcd5e068e62dccb977370bd129d47",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:54:07+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the statement after the inserted check in isValid(String) (first hunk)",
+   "at": "core/src/main/java/com/alibaba/fastjson2/JSON.java:602",
+   "launch": {
+    "ready_seconds": 6.2
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at core/src/main/java/com/alibaba/fastjson2/JSON.java:602 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 0.6
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/core/src/main/java/com/alibaba/fastjson2/JSON.java:602",
+    "function": "JSON.isValid(String)"
+   },
+   "moved": false,
+   "values": {
+    "shown": 1,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "text",
+      "value": "\"[{\"a\":1}]\""
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 4
+  },
+  {
+   "role": "gold",
+   "why": "the statement after the inserted check in isValidArray(String) (last hunk)",
+   "at": "core/src/main/java/com/alibaba/fastjson2/JSON.java:621",
+   "launch": {
+    "ready_seconds": 6.2
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at core/src/main/java/com/alibaba/fastjson2/JSON.java:621 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 0.6
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/core/src/main/java/com/alibaba/fastjson2/JSON.java:621",
+    "function": "JSON.isValidArray(String)"
+   },
+   "moved": false,
+   "values": {
+    "shown": 1,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "text",
+      "value": "\"{\"a\":1}\""
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 8
+  },
+  {
+   "role": "assertion",
+   "why": "the first assertion of Issue81.test_issue",
+   "at": "core/src/test/java/com/alibaba/fastjson2/issues/Issue81.java:15",
+   "launch": {
+    "ready_seconds": 3.1
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at core/src/test/java/com/alibaba/fastjson2/issues/Issue81.java:15 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 0.6
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/core/src/test/java/com/alibaba/fastjson2/issues/Issue81.java:15",
+    "function": "Issue81.test_issue()"
+   },
+   "moved": false,
+   "values": {
+    "shown": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "jsonObjectStr",
+      "value": "\"{\"a\":1}\""
+     },
+     {
+      "name": "jsonArrayStr",
+      "value": "\"[{\"a\":1}]\""
+     },
+     {
+      "name": "value",
+      "value": "\"1111\""
+     },
+     {
+      "name": "this",
+      "value": "Issue81@1723"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 12
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:54:32+00:00"
+}

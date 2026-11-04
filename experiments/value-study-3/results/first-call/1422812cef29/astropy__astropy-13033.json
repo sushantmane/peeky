@@ -1,0 +1,56 @@
+{
+ "bug": "astropy__astropy-13033",
+ "language": "python",
+ "image": "peeky-study/astropy__astropy-13033:peeky-r3",
+ "image_id": "sha256:2a2449fe5b941e569fc286203bdf30178c98ee4f92305ecec6a473c909bbf6f9",
+ "peeky_sha": "1422812cef29bea6531646f500e041745cf90716",
+ "started": "2026-11-04T07:52:01+00:00",
+ "prepare": [],
+ "points": [
+  {
+   "why": "the raise the second hunk changes, in _check_required_columns (the first hunk only adds a nested helper function)",
+   "at": "astropy/timeseries/core.py:79",
+   "test_command": "python -m pytest -q -p no:cacheprovider astropy/timeseries/tests/test_sampled.py::test_required_columns",
+   "captures": [
+    "plural",
+    "required_columns",
+    "self"
+   ],
+   "command": "peeky probe . --at astropy/timeseries/core.py:79 --capture plural,required_columns,self --timeout 300 --json --test -- python -m pytest -q -p no:cacheprovider astropy/timeseries/tests/test_sampled.py::test_required_columns",
+   "exit": 0,
+   "seconds": 2.6,
+   "outcome": "read",
+   "detail": {
+    "status": "completed",
+    "ended": "exit",
+    "hits": 1,
+    "exit_code": 1,
+    "seconds": 2.386,
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "values": {
+    "read": 3,
+    "withheld": 0,
+    "sample": [
+     {
+      "selector": "plural",
+      "value": "''"
+     },
+     {
+      "selector": "required_columns",
+      "value": "['time']"
+     },
+     {
+      "selector": "self",
+      "value": "<TimeSeries length=3>\n  c             time            a     b  \nint64           Time          int64 int64\n----- ----------------------- ----- -----\n    3 2016-0"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-04T07:52:05+00:00"
+}
