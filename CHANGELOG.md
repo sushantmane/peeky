@@ -58,8 +58,11 @@
     It finds that JVM by those exact options and its one loopback port (`/proc`, `lsof`), and
     after attaching proves the JVM's connection ends at Peeky's own debugger; otherwise nothing
     is read. The test runs on to its end, and `test` gives its exit code and last lines.
-    `--timeout` defaults to 300 s for it. Ant, `--debug-jvm`, `-DforkCount=0` and Java sessions
-    are refused, saying what to do instead.
+    `--timeout` defaults to 300 s for it, and covers the build: the probe ends 15 s before the
+    deadline, and the build is stopped at it. Gradle's and Maven's own fork settings are kept: a
+    build that runs several test JVMs at once is refused and stopped, as Peeky attaches to one.
+    Ant, `--debug-jvm`, `-DforkCount=0` and Java sessions are refused, saying what to do
+    instead. A refusal after the test started says that nothing was read, not that nothing ran.
   - Environment assignments before the command apply to a Python or Java run. Peeky runs Cargo
     and a binary in an environment of its own: there, one that wouldn't reach them is refused,
     and a `RUSTFLAGS` of lints alone gets a note. A command `--test` can't

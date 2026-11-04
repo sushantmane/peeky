@@ -84,7 +84,7 @@ the build tool's own:
 | Tool | What Peeky adds |
 | --- | --- |
 | Maven | `-Dmaven.surefire.debug=<agent> -Dpeeky.launch=<nonce>`, and the same for failsafe. Surefire adds them to the JVMs it forks. A command with `forkCount=0` (tests in Maven's own JVM) or its own `maven.surefire.debug` is refused before it runs |
-| Gradle | `-I <init script>`: after the build is configured, every `Test` task gets the agent and the nonce in its `jvmArgs`, and `maxParallelForks = 1`. A command with `--debug-jvm` is refused |
+| Gradle | `-I <init script>`: after the build is configured, every `Test` task gets the agent and the nonce in its `jvmArgs`; nothing else changes (its `maxParallelForks` and `forkEvery` are its own). A command with `--debug-jvm` is refused |
 | `java` | The agent and the nonce as its first options |
 | `javac` | The same with `-J`, for annotation processors such as Lombok's |
 | Ant and the rest | Refused before anything runs. Ant has no switch for the JVMs its `junit` task forks, and `JAVA_TOOL_OPTIONS` would reach Ant's own JVM first. The message says to give the `java` command the test runs |
@@ -101,6 +101,11 @@ nor does a shell that passes the words on. Its port is the one loopback port it 
 read from the operating system (`/proc` on Linux, `lsof` on macOS), not from the build's
 output. A JVM listening on none, or more than one, is refused. Linux and macOS only.
 
+**One at a time.** Peeky watches for 2 s after the first test JVM waits. A build that
+runs another test JVM beside it (Gradle's `maxParallelForks`, Maven's `forkCount`) is refused,
+and stopped: Peeky attaches to one JVM, and the line may run in another. The message says to
+select one test class (`--tests`, `-Dtest`). Peeky doesn't serialize the build's forks for it.
+
 **The proof.** After the debugger attaches, and before the JVM runs, Peeky checks that the JVM
 holds an established connection on its port whose other end is the debugger Peeky started.
 Without it, nothing is read: the probe fails, and says why.
@@ -115,12 +120,20 @@ Peeky can't prove the JVM loaded those bytes; the result keeps saying `attached`
 **The build is Peeky's.** It runs in its own process group, its output in Peeky's state
 directory. When the probe has its hits, it detaches and lets the test run on, then waits for
 the build, within `--timeout`, and reports its exit code and last lines. At the deadline it
-stops the build. A second test JVM that starts and waits is stopped too, and a `NO_STOP` says
-that the line may run in it. If the build ends without a JVM ever waiting, that is `NO_STOP`,
-with the build's last lines and the likely cause.
+stops the build. A second test JVM that starts and waits later (`forkEvery`, `reuseForks=false`)
+is stopped too, and a warning says that the line may run in it. If the build ends without a JVM
+ever waiting, that is `NO_STOP`, with the build's last lines and the likely cause.
 
-**Time.** With `--test`, `--timeout` defaults to 300 s: it covers the build. `--background`
-works as before.
+**Time.** With `--test`, `--timeout` defaults to 300 s, and covers the whole run: the build, the
+probe, which ends 15 s before the deadline so that the build may end on its own,
+and the build's end. At the deadline Peeky stops the build: SIGTERM to its process group, and
+SIGKILL 5 s later if it still runs, each waited for at most 5 s. Only that signalling and
+reaping may outlast `--timeout`, by about 10 s at most. A `--timeout` of 35 s or less (20 s of
+probing and the 15 s) is refused before anything runs. `--background` works as before.
+
+**Refusals after the test started** (a test JVM on several ports, several at once, no classes
+where Peeky looks, an attach it can't prove) say that nothing was read and that Peeky stopped
+the test; only those before it started say that nothing ran.
 
 Java sessions with `--test` are refused for now: the build would have to outlive the command
 that started it, and belong to the session's worker. Attaching a session as today still works.
@@ -227,6 +240,7 @@ their first stop (`SETUP_COST.md`).
 | --- | --- |
 | A Java JVM Peeky can't tie to its own run | Attaching to another JVM would show its values as the test's |
 | More than one listening port on the test JVM | Peeky can't tell which is the debugger's |
+| More than one test JVM at once | Peeky attaches to one; the line may run in another |
 | Ant, and tools Peeky can't add the agent to | The agent would reach the build tool's JVM, or none |
 | `forkCount=0`, the command's own `--debug-jvm` or `maven.surefire.debug` | The tests would run in the build's JVM, or wait on a port Peeky didn't choose |
 | `cargo test --release`, `--doc`, `--workspace`, `--example` | Peeky builds one test target at opt-level 0 |

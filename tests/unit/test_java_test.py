@@ -6,6 +6,7 @@ import os
 import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -50,6 +51,8 @@ def test_commands_peeky_cant_add_its_agent_to_alone_are_refused(tmp_path, words,
         jt.prepare(words, tmp_path)
     assert text in str(caught.value)
     assert not list(tmp_path.iterdir()), "nothing written, nothing run"
+    if caught.value.code == "UNSUPPORTED":
+        assert caught.value.hint.startswith("Nothing ran.")
 
 
 def test_gradle_gets_an_init_script_for_its_test_tasks(tmp_path):
@@ -59,7 +62,9 @@ def test_gradle_gets_an_init_script_for_its_test_tasks(tmp_path):
     assert launch.command[3:] == ["--offline", "test", "--tests", "pkg.FooTest"]
     text = init.read_text()
     assert f"task.jvmArgs('{jt.AGENT}', '-Dpeeky.launch={launch.nonce}')" in text
-    assert "it instanceof Test" in text and "maxParallelForks = 1" in text
+    # The JVM arguments alone: a task's maxParallelForks and forkEvery are its own.
+    assert "it instanceof Test" in text and "maxParallelForks" not in text
+    assert "forkEvery" not in text
     assert init.stat().st_mode & 0o777 == 0o600
     jt._remove(launch)
     assert not init.exists()
@@ -232,4 +237,121 @@ def test_with_no_jvm_attached_a_waiting_one_is_never_called_a_second(tmp_path, m
     found = jt.finish(launch, float("inf"))
     assert found["stopped"] == "Peeky attached to no test JVM, and one waited for a debugger"
     assert launch.notes == [] and "jvm" not in found
+    assert launch.process.poll() is not None
+
+
+def _running(launch):
+    launch.process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True
+    )
+    return launch
+
+
+def test_a_build_running_test_jvms_at_once_is_refused_after_it_started(tmp_path, monkeypatch):
+    # Gradle's maxParallelForks (kept as the build has it) or Maven's forkCount: Peeky
+    # attaches to one JVM, and the line may run in another. Nothing was read.
+    launch = _running(jt.prepare(["./gradlew", "test"], tmp_path))
+    first, second = 2**22 + 7, 2**22 + 9
+    jvm = ["java", jt.AGENT, launch.mark, "Worker"]
+    monkeypatch.setattr(jt, "processes", lambda: {first: jvm, second: jvm})
+    monkeypatch.setattr(jt, "listening", lambda pid: [40000] if pid == first else [])
+    try:
+        with pytest.raises(Refused) as caught:
+            jt.find_jvm(launch, time.monotonic() + 30)
+        assert "gradle started 2 test JVMs at once" in str(caught.value)
+        assert caught.value.hint == (
+            "Nothing was read; Peeky stopped the test. Select one test class (--tests NAME), or "
+            "give the test task maxParallelForks = 1."
+        )
+        assert launch.jvm is None
+        # One alone, for the settling time: that one.
+        monkeypatch.setattr(jt, "processes", lambda: {first: jvm})
+        monkeypatch.setattr(jt, "SETTLE_S", 0.3)
+        assert jt.find_jvm(launch, time.monotonic() + 30) == (first, 40000)
+    finally:
+        launch.process.kill()
+        launch.process.wait()
+
+
+def test_refusals_after_the_test_started_say_nothing_was_read_not_nothing_ran(
+    tmp_path, monkeypatch
+):
+    launch = _running(jt.prepare(["mvn", "test"], tmp_path))
+    pid = 2**22 + 7
+    monkeypatch.setattr(jt, "processes", lambda: {pid: ["java", jt.AGENT, launch.mark, "M"]})
+    monkeypatch.setattr(jt, "listening", lambda _: [40000, 40001])
+    try:
+        with pytest.raises(Refused) as caught:
+            jt.find_jvm(launch, time.monotonic() + 30)
+        assert "listens on 2 loopback ports" in str(caught.value)
+        assert caught.value.hint.startswith("Nothing was read; Peeky stopped the test.")
+        assert "Nothing ran" not in caught.value.hint
+    finally:
+        launch.process.kill()
+        launch.process.wait()
+    _source(tmp_path, "src/pkg/Foo.java")
+    with pytest.raises(Refused) as caught:
+        jt.class_roots(tmp_path, "src/pkg/Foo.java", launch)
+    assert caught.value.hint == (
+        "Nothing was read; Peeky stopped the test. Attach with a config naming class_roots "
+        "(docs/lang/java.md)."
+    )
+
+
+def test_timeout_covers_the_build_its_probe_and_its_end(tmp_path, monkeypatch, capsys):
+    # The probe ends FINISH_MIN_S before --timeout's deadline, and the build is stopped at it:
+    # no time past it for the build to end in.
+    from peeky import cli, java_attach
+
+    monkeypatch.chdir(tmp_path)
+    _source(tmp_path, "src/pkg/Foo.java")
+    seen = {}
+    monkeypatch.setattr(
+        cli,
+        "_java_test_target",
+        lambda args: (tmp_path, "src/pkg/Foo.java", 2, "java-attach", None),
+    )
+
+    def find(launch, deadline, progress=None):
+        seen["find"] = deadline
+        return (4242, 40000)
+
+    def probe(root, request, **_):
+        seen["probe"] = request.timeout
+        return cli._unrun(request, time.monotonic(), "no-stop", {"code": "NO_STOP", "message": ""})
+
+    def finish(launch, deadline, progress=None):
+        seen["finish"] = deadline
+        return {"command": "mvn test", "kind": "java", "output_tail": "", "log": "x"}
+
+    monkeypatch.setattr(jt, "start", lambda launch, cwd: None)
+    monkeypatch.setattr(jt, "find_jvm", find)
+    monkeypatch.setattr(jt, "class_roots", lambda *_: ("target/classes",))
+    monkeypatch.setattr(java_attach, "JavaAttachTarget", lambda **_: None)
+    monkeypatch.setattr(cli, "run_probe", probe)
+    monkeypatch.setattr(jt, "finish", finish)
+    monkeypatch.setattr("peeky.java_setup.default_bundle", lambda: None)
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    argv = ["probe", ".", "--at", "src/pkg/Foo.java:2", "--json", "--test", "--", "mvn", "test"]
+    before = time.monotonic()
+    cli.main([*argv[:4], "--timeout", "100", *argv[4:]])
+    after = time.monotonic()
+    capsys.readouterr()
+    assert before + 100 <= seen["finish"] <= after + 100
+    assert seen["find"] == pytest.approx(seen["finish"] - jt.FINISH_MIN_S - jt.PROBE_MIN_S)
+    assert 100 - jt.FINISH_MIN_S - (after - before) <= seen["probe"] <= 100 - jt.FINISH_MIN_S
+    # Too short for the probe and the build's end: refused before anything runs.
+    seen.clear()
+    code = cli.main([*argv[:4], "--timeout", "30", *argv[4:]])
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert code == 2 and "give more than 35 s" in error["message"] and seen == {}
+
+
+def test_a_build_still_running_at_the_deadline_is_stopped_then(tmp_path):
+    launch = _running(jt.prepare(["java", "-version"], tmp_path))
+    deadline = time.monotonic() + 1.0
+    found = jt.finish(launch, deadline)
+    # Stopped at the deadline, give or take the polling and the signal's reaping.
+    assert found["stopped"] == "the probe's time ran out"
+    assert time.monotonic() - deadline < 3
     assert launch.process.poll() is not None

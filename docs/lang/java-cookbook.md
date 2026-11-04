@@ -827,7 +827,8 @@ peeky probe . --at core/src/main/java/pkg/Foo.java:LINE --capture a,b \
 - **What Peeky adds.** JDWP's agent, suspended and on a loopback port the JVM picks, and a
   random `-Dpeeky.launch=` word, to the JVM that runs the tests only. Maven gets them through
   `-Dmaven.surefire.debug` (and failsafe's), so surefire's forked JVM has them, not Maven's.
-  Gradle gets an init script that adds them to each `Test` task's `jvmArgs`, with one fork.
+  Gradle gets an init script that adds them to each `Test` task's `jvmArgs`, and changes
+  nothing else.
   `java` gets them as its first options, and `javac` as `-J` words.
 - **Which JVM.** The one of your user whose JVM options hold both words exactly, and that
   listens on one loopback port, read from the system (`/proc`, or `lsof` on macOS). Port 5005,
@@ -838,17 +839,25 @@ peeky probe . --at core/src/main/java/pkg/Foo.java:LINE --capture a,b \
 - **Classes.** Maven's `target/classes` and `target/test-classes`, or Gradle's
   `build/classes/<lang>/<set>`, in the `--at` file's module; for `java` and `javac`, the
   classpath's directories inside the root. The `--at` file is the attach's one source.
+- **One test JVM at a time.** A build that runs a second test JVM beside the first (Gradle's
+  `maxParallelForks`, Maven's `forkCount`) is refused, and stopped: Peeky attaches to one, and
+  the line may run in another. Select one test class (`--tests`, `-Dtest`).
 - **The test runs on.** After the probe, Peeky waits for the build, then reports its exit code
-  and last lines (`test` in `--json`); the whole log is in Peeky's state directory. At the
-  deadline it stops the build. `--timeout` defaults to 300 s here, the build included.
+  and last lines (`test` in `--json`); the whole log is in Peeky's state directory.
+- **Time.** `--timeout` defaults to 300 s here, and covers the build, the probe and the build's
+  end: the probe ends 15 s before the deadline, and at the deadline Peeky stops the build
+  (SIGTERM, then SIGKILL 5 s later). Only that may outlast `--timeout`, by about 10 s at most. A
+  `--timeout` of 35 s or less is refused.
 - **Refused before anything runs:** a command with its own debug option (`--debug-jvm`,
   `-Dmaven.surefire.debug`, `-agentlib:jdwp`), `-DforkCount=0`, Ant and other tools (give the
   `java` command the test runs), and sessions: a session's test would outlive the command.
 - **`NO_STOP`** also comes from a build that ended before any test JVM waited: a `-Dtest` filter
   that names no test, a compile error, or a pom whose surefire doesn't fork. The `test` lines say
   which.
-- A second test JVM that waits for a debugger stops the build, with a warning: select one test
-  class.
+- A second test JVM that waits for a debugger later (`forkEvery`, `reuseForks=false`) stops the
+  build, with a warning: select one test class.
+- A refusal after the test started (several ports, several JVMs at once, no classes where Peeky
+  looks, an attach it can't prove) says `Nothing was read; Peeky stopped the test.`
 
 ### Attach to a Gradle test
 

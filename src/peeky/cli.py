@@ -1515,7 +1515,7 @@ def _java_test_target(args):
 def _probe_java_test(args, root, request):
     """A Java `--test` probe (java_test, ADR 0009): run the test command with Peeky's agent
     added to its test JVM, attach to that JVM once it waits, probe, then let the build end
-    within the probe's deadline. The result says what the test did (`test`)."""
+    until the deadline, where Peeky stops it. The result says what the test did (`test`)."""
     from dataclasses import replace
 
     from peeky import java_test
@@ -1525,14 +1525,24 @@ def _probe_java_test(args, root, request):
 
     progress = _progress(args)
     started = time.monotonic()
+    # --timeout covers it all: the probe ends FINISH_MIN_S before the deadline, so the build
+    # may end on its own, and the build is stopped at the deadline (java_test.finish).
     deadline = started + request.timeout
+    probed = deadline - java_test.FINISH_MIN_S
+    if request.timeout <= java_test.PROBE_MIN_S + java_test.FINISH_MIN_S:
+        raise ValueError(
+            f"A Java --test's --timeout covers the build, at least {java_test.PROBE_MIN_S:g} s "
+            f"of probing and {java_test.FINISH_MIN_S:g} s for the build to end: give more than "
+            f"{java_test.PROBE_MIN_S + java_test.FINISH_MIN_S:g} s (the default is "
+            f"{java_test.TIMEOUT_S:g})"
+        )
     launch = java_test.prepare(args.test_command.words, _private_dir("tests"))
     java_test.start(launch, os.getcwd())
     if progress is not None:
         progress(f"started {launch.tool}; its output goes to {launch.log}")
     result = None
     try:
-        found = java_test.find_jvm(launch, deadline - java_test.PROBE_MIN_S, progress)
+        found = java_test.find_jvm(launch, probed - java_test.PROBE_MIN_S, progress)
         if found is None:
             args.no_save = True
             result = _unrun(request, started, "no-stop", _no_test_jvm(launch))
@@ -1547,7 +1557,7 @@ def _probe_java_test(args, root, request):
                 class_roots=java_test.class_roots(root, request.program, launch),
                 launched=(pid, port),
             )
-            left = max(1.0, deadline - time.monotonic())
+            left = max(1.0, probed - time.monotonic())
             result = run_probe(
                 root, replace(request, timeout=left), adapter=target, progress=progress
             )
@@ -1558,10 +1568,8 @@ def _probe_java_test(args, root, request):
         result = _unrun(request, started, "failed", classify(exc, session_closed=True))
         result["refused_before_launch"] = True
     finally:
-        # The test runs on after the probe: it gets the probe's time, and at least a little.
-        finished = java_test.finish(
-            launch, max(deadline, time.monotonic() + java_test.FINISH_MIN_S), progress
-        )
+        # The test runs on after the probe, until the deadline at most.
+        finished = java_test.finish(launch, deadline, progress)
         if result is not None:
             result["test"] = finished
             if launch.notes:

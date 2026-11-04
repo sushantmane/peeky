@@ -13,8 +13,10 @@ before any code runs, so no JVM left over from an earlier run, nor port 5005, pl
 A random nonce, `-Dpeeky.launch=<nonce>`, names this run's JVMs. The port is read from the
 operating system (`/proc` on Linux, `lsof` on macOS), not from the build's output.
 
-The build is Peeky's: its own process group, its output in Peeky's state directory. After
-the probe, Peeky waits for it within the probe's deadline, then stops it.
+The build is Peeky's: its own process group, its output in Peeky's state directory. The probe
+ends FINISH_MIN_S before the deadline; the build may end on its own until the deadline, when
+Peeky stops it. Where the build runs several test JVMs at once, nothing is attached: the line
+may run in one Peeky isn't attached to.
 """
 
 import ctypes
@@ -38,12 +40,18 @@ MARK = "-Dpeeky.launch="
 TIMEOUT_S = 300.0
 # The least of the deadline a probe keeps after the JVM is found.
 PROBE_MIN_S = 20.0
-# The least time the build gets to end after the probe.
+# The part of the deadline kept for the build to end on its own after the probe: the probe
+# ends this much before it, and the build is stopped at it.
 FINISH_MIN_S = 15.0
+# How long Peeky watches for more test JVMs once one waits: a build that runs several at
+# once (Gradle's maxParallelForks, Maven's forkCount) starts them together.
+SETTLE_S = 2.0
+# How long a stopped build gets after SIGTERM, then after SIGKILL (_stop).
+STOP_GRACE_S = 5.0
 POLL_S = 0.2
 TAIL_LINES = 30
 TAIL_BYTES = 16 * 1024
-_HINT = "Nothing ran. Change the test command as the message says."
+_NOTHING_RAN = "Nothing ran. Change the test command as the message says."
 # Options of `java` that take the next word as their value.
 _JAVA_VALUE_OPTIONS = frozenset(
     {
@@ -63,18 +71,27 @@ _JAVA_VALUE_OPTIONS = frozenset(
     }
 )
 _DEBUG_OPTION = re.compile(r"-(?:J)?(?:-?agentlib:jdwp|Xrunjdwp|Xdebug|agentpath:.*jdwp)")
+# Only the JVM arguments: each Test task keeps its own maxParallelForks and forkEvery.
 GRADLE_INIT = """// Peeky's (ADR 0009): JDWP's agent for this run's test JVMs only.
 gradle.taskGraph.whenReady { graph ->
     graph.allTasks.findAll { it instanceof Test }.each { task ->
         task.jvmArgs({agent}, {mark})
-        task.maxParallelForks = 1
     }
 }
 """
 
 
 def _refused(code, message):
-    return Refused(code, message, _HINT if code == "UNSUPPORTED" else None)
+    """A refusal before the test command started: nothing ran."""
+    return Refused(code, message, _NOTHING_RAN if code == "UNSUPPORTED" else None)
+
+
+def _stopped(message, next_step=""):
+    """A refusal after the test command started: nothing was read, and Peeky stops the
+    test (finish)."""
+    return Refused(
+        "UNSUPPORTED", message, f"Nothing was read; Peeky stopped the test. {next_step}".strip()
+    )
 
 
 @dataclass
@@ -102,6 +119,8 @@ def prepare(words, scratch):
     to the test JVM alone."""
     words = tuple(words)
     name = Path(words[0]).name
+    if not (sys.platform.startswith("linux") or sys.platform == "darwin"):
+        raise _refused("UNSUPPORTED", "--test for Java runs on Linux and macOS only")
     nonce = secrets.token_hex(16)
     scratch = Path(scratch)
     log = scratch / f"java-test-{nonce[:12]}.log"
@@ -238,7 +257,7 @@ def processes():
                 if argv:
                     found[int(parts[0])] = argv
         return found
-    raise _refused("UNSUPPORTED", "--test for Java runs on Linux and macOS only")
+    raise _stopped("--test for Java runs on Linux and macOS only")
 
 
 def _darwin_argv(pid):
@@ -418,21 +437,23 @@ def _owners(inodes):
 def find_jvm(launch, deadline, progress=None):
     """(pid, port) of the first test JVM of ``launch`` that waits on one loopback port; None
     if the build ended first. TimeoutError at the deadline. Refused for a test JVM listening
-    on several ports."""
+    on several ports, and where the build runs more than one test JVM at once."""
     said = False
     while True:
         jvms = sorted(pid for pid, argv in processes().items() if is_test_jvm(argv, launch.mark))
         for pid in jvms:
             ports = listening(pid)
             if len(ports) == 1:
+                _one_at_a_time(launch, pid, min(deadline, time.monotonic() + SETTLE_S))
                 launch.jvm = (pid, ports[0])
                 return launch.jvm
             if len(ports) > 1:
-                raise _refused(
-                    "UNSUPPORTED",
+                raise _stopped(
                     f"The test JVM (pid {pid}) listens on {len(ports)} loopback ports "
                     f"({', '.join(map(str, ports))}), so Peeky can't tell which is its debug "
                     "agent's: nothing was attached",
+                    "Start the test waiting for a debugger on one port, and attach with a "
+                    "config (docs/lang/java.md).",
                 )
         if launch.process.poll() is not None:
             return None
@@ -444,6 +465,33 @@ def find_jvm(launch, deadline, progress=None):
         if not said and progress is not None and jvms:
             progress("the test JVM started; waiting for its debug agent")
             said = True
+        time.sleep(POLL_S)
+
+
+def _one_at_a_time(launch, first, until):
+    """Refused where the build runs another test JVM beside ``first`` until ``until``:
+    Peeky attaches to one, and the line may run in another, which would wait for a debugger
+    that never comes. One that starts later, after the first, is finish's to note."""
+    while True:
+        others = sorted(
+            pid
+            for pid, argv in processes().items()
+            if pid != first and is_test_jvm(argv, launch.mark)
+        )
+        if others:
+            select = {
+                "gradle": "Select one test class (--tests NAME), or give the test task "
+                "maxParallelForks = 1",
+                "maven": "Select one test class (-Dtest=NAME), or run surefire with one fork",
+            }.get(launch.tool, "Give a command that starts one JVM")
+            raise _stopped(
+                f"{launch.tool} started {len(others) + 1} test JVMs at once (pids {first}, "
+                f"{', '.join(map(str, others[:4]))}), and Peeky attaches to one: the line may "
+                "run in another, so nothing was attached",
+                select + ".",
+            )
+        if time.monotonic() >= until or launch.process.poll() is not None:
+            return
         time.sleep(POLL_S)
 
 
@@ -510,12 +558,11 @@ def class_roots(root, program, launch):
             if relative not in found:
                 found.append(relative)
     if not found:
-        raise _refused(
-            "UNSUPPORTED",
+        raise _stopped(
             f"Peeky found no compiled classes of {program} in the build's output "
             f"({', '.join(sorted({_shown(c, root) for c in candidates})) or 'no classpath'}): "
-            "the test JVM started, but its classes aren't where Peeky looks. Attach with a "
-            "config naming class_roots (docs/lang/java.md)",
+            "the test JVM started, but its classes aren't where Peeky looks",
+            "Attach with a config naming class_roots (docs/lang/java.md).",
         )
     return tuple(found)
 
@@ -536,7 +583,8 @@ def _package(source):
 
 
 def finish(launch, deadline, progress=None):
-    """Let the build end within ``deadline``, then stop it, and any other of this run's test
+    """Let the build end within ``deadline``, then stop it (_stop: SIGTERM, then SIGKILL
+    STOP_GRACE_S later, each reaped within STOP_GRACE_S), and any other of this run's test
     JVMs still waiting; what the test did, for the result."""
     process = launch.process
     attached, port = launch.jvm or (None, None)
@@ -605,7 +653,7 @@ def _stop(process):
         except (ProcessLookupError, PermissionError):
             return
         try:
-            process.wait(timeout=5)
+            process.wait(timeout=STOP_GRACE_S)
             return
         except subprocess.TimeoutExpired:
             continue
