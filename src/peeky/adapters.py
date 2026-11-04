@@ -350,10 +350,13 @@ _IMPORTS_PYTEST = re.compile(
 def check_module(name):
     """Refuse a `--run-module` other than pytest."""
     if name != RUN_MODULE:
+        shown = str(name)[:80]
         raise ValueError(
-            f"--run-module takes only pytest (`--run-module pytest`), not {str(name)[:80]!r}: "
-            "Peeky runs pytest as `python -m pytest` does, and no other module. For another "
-            "program, use --run with a script"
+            f"--run-module takes only pytest (`--run-module pytest`), not {shown!r}: "
+            "Peeky runs pytest as `python -m pytest` does, and no other module. Run "
+            f"{shown} from a script instead: run.py holding `import runpy; "
+            f"runpy.run_module({shown!r}, run_name='__main__', alter_sys=True)`, then "
+            "`--run run.py -- ARGS`"
         )
     return name
 

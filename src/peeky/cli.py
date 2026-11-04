@@ -441,6 +441,9 @@ def _resolve(path, program, line, config, tools=True):
             if "main_class" in data
             else "c"
         )
+        root = path if path.is_dir() else path.parent
+        if language in ("java", "java-attach"):
+            data = _java_paths(data, root)
         if language in ("java", "java-attach") and isinstance(data.get("bundle"), str):
             # Relative to the configuration file, wherever the command runs from (session
             # workers read a copy of the configuration from the state directory).
@@ -455,7 +458,6 @@ def _resolve(path, program, line, config, tools=True):
         if language == "rust" and is_workspace_config(data) and tools:
             # The tools the configuration leaves out are this host's (PEEKY_RUST_*, rustup).
             data = {**rust_tools(), **data}
-        root = path if path.is_dir() else path.parent
         return root, program, line, language, data
     if path.suffix == ".java" or str(program or "").endswith(".java"):
         raise ValueError(_JAVA_NEEDS_CONFIG)
@@ -524,6 +526,33 @@ def _resolve(path, program, line, config, tools=True):
     raise ValueError(
         "Cannot detect the target; pass a .py/.c/.cpp file, a Cargo crate, or --config"
     )
+
+
+def _java_paths(data, root):
+    """A Java config whose `sources` and `class_roots` may name a path inside the root by its
+    absolute path, as round 2's agents wrote them: each taken relative to the root. One
+    outside it is refused, naming the root."""
+    from peeky.errors import Refused
+
+    fixed = dict(data)
+    for key in ("sources", "class_roots"):
+        names = data.get(key)
+        if not isinstance(names, list):
+            continue
+        relative = []
+        for name in names:
+            if isinstance(name, str) and os.path.isabs(name):
+                found = os.path.relpath(os.path.realpath(name), os.path.realpath(root))
+                if found == ".." or found.startswith("../"):
+                    raise Refused(
+                        "INVALID_REQUEST",
+                        f"The config's {key} names {name}, outside the target directory "
+                        f"{root}: give the directory that holds it as the target",
+                    )
+                name = Path(found).as_posix()
+            relative.append(name)
+        fixed[key] = relative
+    return fixed
 
 
 _NATIVE_SUFFIXES = (".c", ".cpp", ".cc", ".cxx")
@@ -1703,6 +1732,18 @@ def _progress(args):
 def _probe_result(args, root, result, edit, original, program, language):
     if edit:
         _bind_candidate(result, original, edit, program)
+    if (
+        language == "java-attach"
+        and getattr(args, "test_command", None) is None
+        and (result.get("error") or {}).get("code") == "NO_STOP"
+    ):
+        # 30 of round 2's probes in 16 attempts ended so: the line didn't run while Peeky was
+        # attached (another JVM, another classpath, or the line ran before the attach).
+        result["error"]["hint"] += (
+            " An attached JVM runs what started it, which may not run the line, or ran it "
+            "before the attach: let Peeky start the test with `--test -- <the test command>` "
+            "(docs/FIRST.md)."
+        )
     if misplaced := _misplaced_options(args):
         if (result.get("error") or {}).get("code") == "NO_STOP":
             result["error"]["hint"] = misplaced + "."
@@ -6007,6 +6048,12 @@ def main(argv=None, _job=False, _edits=None):
 
 # The help text's first line; not read from the docstring, which `python -OO` drops.
 DESCRIPTION = "`peeky`: a standalone debugger tool that agents, harnesses and humans call."
+FIRST_QUESTION = (
+    "Your first question, from the project's root: peeky probe . --at FILE:LINE --capture a,b "
+    "--test -- <the command that runs the failing test> (docs/FIRST.md)"
+)
+# `--set-at '966@1 url=x'` typed as one word: its location, a space, then NAME=VALUE.
+_SET_AT_WORD = re.compile(r"((?:\S+:)?[0-9]+(?:@(?:[0-9]+|all))?)\s+([^\s=]+\s*=.*)", re.S)
 
 
 def _main(argv, _job, _edits):
@@ -6032,7 +6079,13 @@ def _main(argv, _job, _edits):
         argv = argv[: split - 1] + (
             [f"--check-argv={word}" for word in argv[split + 1 :]] or ["--check-argv="]
         )
-    parser = argparse.ArgumentParser(prog="peeky", description=DESCRIPTION)
+    for at in reversed(range(len(argv) - 1)):
+        # Round 2's agents wrote `--set-at 'LINE NAME=VALUE'` as one word, 9 times: it is
+        # taken where the word is a location, a space, then NAME=VALUE. A path with a space
+        # still needs the two words.
+        if argv[at] == "--set-at" and (found := _SET_AT_WORD.fullmatch(argv[at + 1])):
+            argv[at + 1 : at + 2] = [found[1], found[2]]
+    parser = argparse.ArgumentParser(prog="peeky", description=DESCRIPTION, epilog=FIRST_QUESTION)
     add_version(parser)
     commands = parser.add_subparsers(dest="command", required=True)
 
@@ -6115,7 +6168,11 @@ def _main(argv, _job, _edits):
     test_option(sub)
     # Accepted everywhere: describe prints no progress, so it changes nothing here.
     sub.add_argument("--quiet", action="store_true", help=argparse.SUPPRESS)
-    sub = commands.add_parser("probe", help="One stateless question: stop, capture, set, report")
+    sub = commands.add_parser(
+        "probe",
+        help="One stateless question: stop, capture, set, report",
+        description=FIRST_QUESTION,
+    )
     probe_parser = sub
     common(sub)
     sub.add_argument("--at", required=True, help="<line> or <path>:<line>")

@@ -66,6 +66,8 @@ The last column is the `retryable` field.
 - The line never runs, or the program failed first. `exit_code` is set when the debugger reports
   it.
 - After a failure, read the output and check the program's arguments.
+- On a JVM you attached to, the hint adds that the JVM runs what started it, which may not run
+  the line, or ran it before the attach: `--test` starts the test itself.
 - A Java `--test` whose command ended before any JVM with Peeky's debug agent waited: `The test
   command ended (exit code 1) before any JVM started with Peeky's debug agent …`. The result's
   `test` has the build's last lines: a `-Dtest` filter that names no test, a compile error, or

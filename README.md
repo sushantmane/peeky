@@ -86,19 +86,28 @@ when a print costs more ([when][when]):
 - builds or test runs are slow, and one probe reads many values in one run;
 - you want to check a fix on a fresh copy, with your files unchanged.
 
-On your own project, the first command depends on its kind ([first command][first-command]):
+On your own project, give Peeky the command that runs the failing test, from the project's
+root ([first question][first]). Peeky reads it and runs the program or test it names under the
+debugger; a warning says where that run differs from the command's, and what it can't run so is
+refused:
 
-- **Python:** from the repository's root,
-  `peeky probe . --at src/pkg/mod.py:LINE --capture a,b --run-module pytest -- tests/test_x.py`
-  runs a pytest test. `--run script.py` runs a script that reaches the line instead. A project
-  installed without `-e` runs its `site-packages` copy, not its source.
-- **Java:** attach to a Maven or Gradle test started waiting for a debugger, or launch a class
-  with no Maven or Gradle dependencies.
-- **C and C++:** a directory of sources, which Peeky builds itself. Or a binary your project's own
-  build (Make, CMake, autotools) made with clang `-O0 -g -gdwarf-5 -grecord-command-line`:
-  `peeky probe . --binary ./prog --at src/x.c:LINE`, a session, or a worker on another host
+```sh
+peeky probe . --at src/pkg/mod.py:LINE --capture a,b --test -- python -m pytest tests/test_x.py
+```
+
+- **Python:** `python -m pytest …` or `python script.py …`, not the `pytest` script.
+  `python -m pytest` puts the root first on `sys.path`: a package at the root is imported from
+  the source, and a `src/` layout's as installed (`pip install -e .`).
+- **Java:** `mvn test …`, `./gradlew test …`, `java …` or `javac …`: Peeky starts the test,
+  attaches to its JVM, and lets it end. Or attach to a JVM you started, or launch a class with no
+  Maven or Gradle dependencies ([first command][first-command]).
+- **C and C++:** the test's binary, built by your project with clang `-O0 -g -gdwarf-5
+  -grecord-command-line`, and its arguments
   ([C and C++](https://github.com/sushantmane/peeky/blob/main/docs/lang/c-cpp.md#a-binary-your-project-built)).
-- **Rust:** a binary crate with no dependencies. A crate with dependencies isn't supported yet.
+  Or a directory of sources, which Peeky builds itself.
+- **Rust:** `cargo test …` or `cargo run …`, in a workspace whose dependencies are vendored
+  (`cargo vendor --locked vendor`), or a `cargo new` crate. Peeky builds it and runs the test's
+  executable itself, in its own environment.
 
 `examples/pagination_bug.py` has a bug: page 1 starts at the second page. Stop at line 8, read two
 values, and set `start` to 0:
@@ -167,7 +176,7 @@ PASS: 12 independent pagination checks
 
 | If you are | Read |
 | --- | --- |
-| An agent | [docs/AGENT_GUIDE.md][agent-guide], or install the [skills/peeky-debug][skill] skill |
+| An agent | [docs/FIRST.md][first] for the first question, then [docs/AGENT_GUIDE.md][agent-guide]; or install the [skills/peeky-debug][skill] skill |
 | A person | the [COOKBOOK][cookbook]: copy-paste recipes with real output |
 | Debugging one language | its page: [Python][python], [Java][java], [C and C++][c-cpp], [Rust][rust] |
 | Looking up an error code | [docs/ERRORS.md][errors] |
@@ -270,6 +279,7 @@ Apache License 2.0: see [LICENSE][license] and [NOTICE][notice]. The Java adapte
 [agent-guide]: https://github.com/sushantmane/peeky/blob/main/docs/AGENT_GUIDE.md
 [when]: https://github.com/sushantmane/peeky/blob/main/docs/AGENT_GUIDE.md#when-peeky-beats-a-print
 [first-command]: https://github.com/sushantmane/peeky/blob/main/docs/AGENT_GUIDE.md#your-first-command
+[first]: https://github.com/sushantmane/peeky/blob/main/docs/FIRST.md
 [skill]: https://github.com/sushantmane/peeky/blob/main/skills/peeky-debug/SKILL.md
 [python]: https://github.com/sushantmane/peeky/blob/main/docs/lang/python.md
 [java]: https://github.com/sushantmane/peeky/blob/main/docs/lang/java.md
