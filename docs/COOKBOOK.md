@@ -122,11 +122,16 @@ peeky verify <target> --check <checker.py> --old '<text>' --new '<text>'   # you
 ### Install Peeky
 
 Peeky needs Python 3.11 or later. Installing it also brings debugpy, the debugger Peeky uses for
-Python targets. Install it as a tool, in an environment of its own, from the repository root:
+Python targets. Install it as a tool, in an environment of its own, from PyPI, where the package
+is `peeky-debug`:
 
 ```sh
-pipx install .    # or: uv tool install .
+pipx install peeky-debug    # or: uv tool install peeky-debug
 ```
+
+The package has the commands, but no examples or scripts: run the recipes from a clone of the
+repository. To run Peeky from the clone's sources instead, run `pipx install .` (or
+`uv tool install .`) from its root.
 
 A Python program runs on its project's interpreter, so it imports what its project installs.
 That is the root's `.venv` or `venv`, else the active virtual environment, else Peeky's own. Name
