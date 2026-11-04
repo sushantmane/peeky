@@ -31,6 +31,14 @@
 
 ### Other changes
 
+- **CI runs on GitHub Actions, in the image the Docker mirror uses.** One job builds
+  `scripts/ci_linux`'s image into the Actions cache. Lane jobs then run `run_lanes.sh`'s lanes in
+  it through `scripts/ci_linux/docker_lanes.sh`, which picks lanes with `PEEKY_LANES`; a laptop
+  runs the same script. That brings LLVM 20, GCC's C lane and GDB's DAP into CI. New `py311` and
+  `py313` lanes run the unit and integration tests on CPython 3.11 and 3.13, installed in the image
+  by uv beside Ubuntu's 3.12. Remote SSH e2e stays on the runner. Runners are pinned to Ubuntu
+  24.04.
+
 - **Where round 2's `peeky-first` set-up went, and ADR 0009.**
   `experiments/value-study-2/SETUP_COST.md` sorts every tool call before each attempt's first
   stop (`harness/setup_cost.py`; a doc's example output printed in the same call isn't taken

@@ -1,57 +1,63 @@
 # Testing and delivery budget
 
-## Required CI: parallel from the first commit
+## Required CI: the Linux lanes on GitHub Actions
 
-The CI workflow, `.github/workflows/ci.yml`, runs eleven jobs. They all start independently: no build
-or install job sits ahead of the tests.
+The CI workflow, `.github/workflows/ci.yml`, runs on every pull request, on each push to `main`,
+and by hand. Its jobs run on GitHub's hosted Ubuntu 24.04 runners (x86_64):
 
-| Lane | Scope | Design budget |
+- **CI image:** one job builds the image in `scripts/ci_linux` into the Actions cache. Each lane
+  job loads it from there, so the image is built again only when its Dockerfile changes.
+- **Lane jobs:** each runs some lanes of `scripts/ci_linux/run_lanes.sh` in that image, through
+  `scripts/ci_linux/docker_lanes.sh` with `PEEKY_LANES` naming them. A laptop runs the same
+  script ([The Docker mirror](#the-docker-mirror)).
+- **Remote SSH e2e** runs on the runner itself, with `PEEKY_E2E_DOCKER=1`: a second host (a Linux
+  container with key-only sshd) reached through a real `ssh -L`. It covers a probe, a session, a
+  tunnel drop and recovery, a source-mismatch refusal and worker loss; for Java, a launched JVM
+  and an attached one; for C, C++ and Rust, a probe with a change, a session, and a changed
+  source and header or module refused ([REMOTE.md](REMOTE.md)).
+
+| Job | Lanes | Timeout |
 | --- | --- | --- |
-| quality | Ruff lint and formatting | 60s |
-| unit | Framing, failure injection, lifecycle validation, verification bypasses | 90s |
-| integration (Python 3.11) | Real debugpy + HTTP + runtime intervention + owned target cleanup | 180s |
-| integration (Python 3.13) | Same integration contract on the newer interpreter | 180s |
-| Java headless conformance (`java`) | `tests/java` on JDK 17 (Temurin), with an adapter that `scripts/setup_java_adapter.py` builds (the setup `peeky setup-java` runs) | — |
-| C LLVM 18 conformance (`native-c`) | `tests/native`: real C debugging, on Ubuntu 24.04, with clang-18, lldb-18 and llvm-18 from signed Ubuntu repositories. The LLVM major is pinned; distribution patch versions can change, and each run prints them. It acquires its tools explicitly, never relying on a hosted image's toolchain, and starts independently of the Python, Java, package and quality lanes. It reports the acquisition and conformance times. Cold hosted timing must be measured before claiming the budget | — |
-| C++ LLVM 18 conformance (`native-cpp`) | `tests/cpp`: real C++ debugging and agent verification, with the same LLVM 18 packages and `clang++-18`. Cases whose expectations depend on the compiler also run with the runner's g++. It records the installed package revisions, and depends on no C or Java lane. Measured hosted runs show whether it meets its budget | — |
-| C++ GCC 13 conformance (`native-cpp-gcc`) | Every C++ case, built by g++ 13 with LLVM 18's lldb-dap: `pytest -m cpp tests/cpp tests/native`. The `cpp` marker selects all of `tests/cpp`, and the C++ cases of `tests/native`. It acquires g++-13 with the LLVM 18 packages | — |
-| Rust 1.96 LLVM 18 conformance (`rust-probe`) | `tests/rust`: raw Rust debugging and the experimental Rust worker, with the pinned Rust 1.96.0 toolchain and LLVM 18 | — |
-| wheel smoke | Build wheel/sdist, install clean, import and CLI entry points outside source tree | 90s |
-| remote SSH e2e | A second host (Linux container with key-only sshd) reached through a real `ssh -L`: probe, session, tunnel drop and recovery, source-mismatch refusal, worker loss; Java: a launched JVM and an attached one; C, C++ and Rust: a probe with a change, a session, and a changed source and header or module refused (`tests/remote`, `PEEKY_E2E_DOCKER=1`) | 120s |
-| Rust LLVM 20 (Docker mirror only, `scripts/ci_linux`) | Rust memory views with lldb-dap's `readMemory`; `PEEKY_EXPECT_READ_MEMORY=1` fails the lane if values fall back to raw fields | 60s |
-
-A dash means that no design budget is recorded. The job's timeout still applies.
-
-**Timeouts and goals:**
-
-- Every hosted CI job has a four-minute timeout, except three. Remote SSH e2e and C++ LLVM 18
-  conformance have six minutes, and C++ GCC 13 conformance has ten. The C++ jobs run each
-  compiler-aware case with g++ as well, so they take longest.
-- The Docker mirror's lanes have no timeout.
-- The goal is under 5 minutes of execution wall time for the required checks, and ideally under 3.
-- Queue delays are recorded separately. They are outside the workflow's control.
-- A cold cache, and the availability of dependency services, can affect the duration.
-- A timeout is a failure, not evidence that the speed goal was met.
+| CI image | builds the image into the Actions cache | 30 min |
+| lanes (quality unit wheel gdb-dap java) | Ruff lint and format; the unit tests; the wheel smoke test; GDB's DAP; `tests/java` on JDK 17 | 30 min |
+| lanes (integration) | real debugpy, HTTP, runtime changes and cleanup, on Ubuntu's Python 3.12 | 30 min |
+| lanes (py311), lanes (py313) | the unit and integration tests on CPython 3.11 and on 3.13 | 45 min |
+| lanes (c c-gcc-llvm20) | `tests/native` with clang 18 and lldb-dap 18; C built by GCC with lldb-dap 20 | 45 min |
+| lanes (cpp cpp-llvm20) | `tests/cpp` with clang++ 18, with lldb-dap 18 and with lldb-dap 20 | 45 min |
+| lanes (cpp-gcc cpp-gcc-llvm20) | every C++ case built by g++ 13, with lldb-dap 18 and with lldb-dap 20 | 45 min |
+| lanes (rust) | `tests/rust` with the pinned Rust 1.96.0 and lldb-dap 18 | 60 min |
+| lanes (rust-llvm20) | `tests/rust` with lldb-dap 20, whose `readMemory` qualifies Rust memory views | 60 min |
+| remote SSH e2e | `tests/remote`, on the runner | 30 min |
 
 **How the workflow runs:**
 
-- Pip caching uses the package and dev requirements as keys.
+- A timeout is a failure.
 - Superseded branch and PR runs are canceled.
 - Every job runs on every change: no path filter skips a language's lane.
-- Actions are pinned to commit SHAs. Permissions are read-only.
+- Each lane job's summary lists its lanes' PASS or FAIL lines, with their times. A failed lane's
+  whole log is kept as an artifact for seven days.
+- Actions are pinned to commit SHAs. Permissions are read-only, and checkouts keep no credentials.
 - PR CI needs no live model, API token, user program or paid external service.
 - PR CI needs no external or persistent networked debugger target. The remote lane creates an
   ephemeral one, in a container.
-- Diagnostics stay in the job logs. The delivery workflow uploads distributions only.
+- **Runner minutes:** the repository is private, so each job's minutes count against the
+  account's Actions allowance (2,000 minutes a month on GitHub Free), then its budget. A run of
+  every job is estimated at two to three runner-hours, from the lanes' local times; measure it on
+  the first runs. When the allowance is spent and no budget covers more, GitHub doesn't start the
+  jobs, and each says that the spending limit needs to be increased. Standard runners are free
+  for public repositories.
 
 ### The Docker mirror
 
-`scripts/ci_linux` runs the same checks and test suites as `ci.yml`'s jobs, once each, in its
-Ubuntu image. It skips remote SSH e2e: run that one on the host, with `PEEKY_E2E_DOCKER=1`.
-Hosted CI runs the integration tests on Python 3.11 and 3.13. The mirror runs them once, with the
-image's `python3`. [CONTRIBUTING.md](../CONTRIBUTING.md) has the commands. The mirror adds lanes
-that hosted CI doesn't have:
+`scripts/ci_linux` holds CI's image and lanes, so a laptop runs what CI's lane jobs run:
+`scripts/ci_linux/docker_lanes.sh` builds the image, then runs every lane, or the ones
+`PEEKY_LANES` names. [CONTRIBUTING.md](../CONTRIBUTING.md) has the commands. Remote SSH e2e runs
+on the host instead, with `PEEKY_E2E_DOCKER=1`. The image uses the machine's architecture (arm64
+on Apple Silicon); CI's runners are x86_64. Besides Python, Java, C, C++ and Rust with LLVM 18,
+the lanes include:
 
+- `py311` and `py313`: the unit and integration tests on CPython 3.11 and 3.13, which uv installs
+  in the image beside Ubuntu's 3.12, each in its own environment;
 - `cpp-llvm20` and `rust-llvm20`: C++ and Rust with LLVM 20's lldb-dap, whose `readMemory` qualifies
   Rust memory views, and libstdc++ strings with a NUL byte. In `cpp-llvm20`,
   `PEEKY_EXPECT_READ_MEMORY=1` makes the C++ tests expect libstdc++ strings read whole from memory;
@@ -59,14 +65,15 @@ that hosted CI doesn't have:
   cases depend on what GCC builds: prologues, loop headers, `.incbin`, previews, static storage,
   initializers and a block's `extern`, and the caller chains. The rest expect clang's lines and
   text. The `c` lane runs these files' GCC cases with lldb-dap 18;
-- `cpp-gcc-llvm20`: every C++ case built by GCC, with LLVM 20's lldb-dap, as `cpp-gcc` (the
-  `native-cpp-gcc` job) runs them with lldb-dap 18;
+- `cpp-gcc-llvm20`: every C++ case built by GCC, with LLVM 20's lldb-dap, as `cpp-gcc` runs them
+  with lldb-dap 18;
 - `gdb-dap`: GDB's DAP, which the CUDA qualification drives (`scripts/cuda/qualify.py`).
 
 It prints one PASS or FAIL line per lane, and exits non-zero on a failure. Under a FAIL line, it
 prints what each failing test said, bounded: its header, its frames' `file:line`, its `E` lines and
 the start of its output. A lane that isn't pytest shows its last 40 lines. To keep each failed
-lane's whole log, mount a directory and set `PEEKY_LANE_LOGS` to it.
+lane's whole log, set `PEEKY_LANE_LOGS_DIR` to a directory for `docker_lanes.sh` (it mounts the
+directory and sets `PEEKY_LANE_LOGS` in the container).
 
 C++ cases whose lines, frame names or notes depend on the compiler take the `cxx` fixture
 (`tests/conftest.py`). Each runs once per compiler, with each compiler's expectations, as C's
@@ -179,9 +186,8 @@ and sdist artifacts, which are kept for seven days.
 
 ## Measurements
 
-Each run's job durations are on GitHub. The native, Rust and remote jobs also write their toolchain
-acquisition and test times to the run's summary. The Docker mirror prints each lane's time on its
-PASS or FAIL line.
+Each run's job durations are on GitHub. Each lane job's summary lists its lanes' times, and remote
+SSH e2e writes its own. The Docker mirror prints each lane's time on its PASS or FAIL line.
 
 The [first hosted CI run](https://github.com/sushantmane/peeky/actions/runs/38526357448), on
 2026-10-14 at commit `75dd4cd`, had five jobs: quality, unit, integration on Python 3.11 and 3.13,

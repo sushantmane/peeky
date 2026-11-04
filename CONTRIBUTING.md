@@ -26,22 +26,21 @@ Report a vulnerability privately, as [SECURITY.md](SECURITY.md) describes. Don't
 
 ## CI budget
 
-CI starts its jobs in parallel. [TESTING.md](docs/TESTING.md#required-ci-parallel-from-the-first-commit) lists them, with their timeouts. The desired overall run is under five minutes excluding queue delays. This is a budget and measured target, not a guarantee: hosted-runner scheduling and package download delays are external. Watch the longest job's duration as tests grow. Split independent fixtures or move optional benchmarks to manually triggered jobs before increasing timeouts. Newer pushes cancel obsolete runs for the same branch or pull request.
+CI builds its image first, then starts its lane jobs in parallel; remote SSH e2e runs beside the image build. [TESTING.md](docs/TESTING.md#required-ci-the-linux-lanes-on-github-actions) lists the jobs, with their timeouts. A run's wall time is the image build plus the slowest lane job, unless remote SSH e2e alone takes longer: watch the slowest job as tests grow, and split its lanes into two jobs before raising its timeout. Each job's runner minutes count against the account's Actions allowance while the repository is private. Newer pushes cancel obsolete runs for the same branch or pull request.
 
 Direct runtime and development versions are pinned. Keep the dev extra and `requirements-dev.txt` aligned. Actions are pinned by commit SHA and updated by Dependabot. Transitive pip dependencies are not yet locked; a full lock is a follow-up if reproducibility requires it.
 
 ## CI's Linux lanes on your machine
 
-When hosted CI cannot run, run the Docker mirror, `scripts/ci_linux`. [TESTING.md](docs/TESTING.md#the-docker-mirror) says what it runs, and how it differs from hosted CI. It skips remote SSH e2e: run that one on the host, with `PEEKY_E2E_DOCKER=1`. You need Docker or OrbStack; the debugger needs `SYS_PTRACE`:
+CI's lane jobs run `scripts/ci_linux/docker_lanes.sh`, and so can you: it builds CI's image, then runs every lane, or the ones `PEEKY_LANES` names. [TESTING.md](docs/TESTING.md#the-docker-mirror) says what each lane runs. Remote SSH e2e runs on the host, with `PEEKY_E2E_DOCKER=1`. You need Docker or OrbStack; the debugger needs `SYS_PTRACE`:
 
 ```sh
-docker build -t peeky-ci-linux scripts/ci_linux
-git archive HEAD | docker run --rm -i --cap-add=SYS_PTRACE --security-opt seccomp=unconfined \
-  peeky-ci-linux bash -c 'mkdir /w && tar -x -C /w && cd /w && scripts/ci_linux/run_lanes.sh'
-PEEKY_E2E_DOCKER=1 pytest tests/remote   # the remote SSH lane, on the host
+scripts/ci_linux/docker_lanes.sh                       # every lane
+PEEKY_LANES="unit rust" scripts/ci_linux/docker_lanes.sh  # only these lanes
+PEEKY_E2E_DOCKER=1 pytest tests/remote                 # the remote SSH lane, on the host
 ```
 
-It runs against the committed tree (`git archive HEAD`). It prints one `PASS`/`FAIL` line per lane, with what each failing test said. The tree goes in through stdin rather than a bind mount: OrbStack bind mounts from protected folders such as `~/Documents` can hang. The image uses your machine's architecture (arm64 on Apple Silicon); hosted CI is x86_64.
+It runs against the committed tree (`git archive HEAD`). It prints one `PASS`/`FAIL` line per lane, with what each failing test said; with `PEEKY_LANE_LOGS_DIR` set to a directory, it keeps each failed lane's whole log there. The tree goes in through stdin rather than a bind mount: OrbStack bind mounts from protected folders such as `~/Documents` can hang. The image uses your machine's architecture (arm64 on Apple Silicon); CI's runners are x86_64.
 
 `scripts/ci_linux/run_tests.sh` runs chosen tests with one lane's environment. On Apple Silicon, an image built for x86_64 runs under emulation (OrbStack's Rosetta). There the debugger can't stop a program, so only cases that don't run one mean anything, such as what a binary's startup code is:
 

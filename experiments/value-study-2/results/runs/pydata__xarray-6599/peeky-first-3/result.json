@@ -215,7 +215,7 @@
  "peeky_mentions_in_commands": 13,
  "peeky_withheld_markers": 0,
  "peeky_withheld_by_marker": {},
- "peeky_values_printed": 12,
+ "peeky_values_printed": 10,
  "contaminated": false,
  "final_message": "Fixed timedelta conversion to use a zero timedelta offset; Peeky showed it incorrectly subtracting `np.datetime64(\"1970-01-01\")` from timedelta values. Added regression coverage and documentation. The example\u2019s huge values reflect the intentional change to evaluating input data rather than its index: use `xr.polyval(azimuth_time.azimuth_time, polyfit_coefficients)` to obtain the expected results.",
  "assistant_messages": [

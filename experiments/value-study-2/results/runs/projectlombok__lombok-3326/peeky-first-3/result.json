@@ -336,7 +336,7 @@
  "peeky_withheld_by_marker": {
   "not settable": 7
  },
- "peeky_values_printed": 46,
+ "peeky_values_printed": 42,
  "contaminated": false,
  "final_message": "Fixed the crash: `@UtilityClass` cleared the inner class\u2019s enclosing type but left its cached erasure stale, breaking generic inference. Peeky\u2019s `session get` showed that erasure retained a separate enclosing `ClassType`. The handler now clears both enclosing types; regression coverage and a changelog entry were added.",
  "assistant_messages": [

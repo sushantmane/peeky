@@ -267,7 +267,7 @@
   "withheld": 2,
   "not settable": 1
  },
- "peeky_values_printed": 2,
+ "peeky_values_printed": 0,
  "contaminated": false,
  "final_message": "Fixed: the replacement helper was printing and replacing look-ahead text beyond the matched lines\u2014not expanding the capture. Replacement and output now stay within the matched range, preserving look-around and EOF behavior. Regression tests and the exact reproduction pass with both regex engines. Peeky could not expose values; its probe failed with `\"Native stopped line does not match prepared symbols\"`.",
  "assistant_messages": [

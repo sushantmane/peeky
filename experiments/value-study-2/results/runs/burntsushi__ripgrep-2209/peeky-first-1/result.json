@@ -314,7 +314,7 @@
   "withheld": 2,
   "not settable": 2
  },
- "peeky_values_printed": 18,
+ "peeky_values_printed": 9,
  "contaminated": false,
  "final_message": "The bug was leaked look-ahead text, not an expanded capture: Peeky\u2019s probe at `util.rs:99` showed `dst.len = 3` for `bar` before the extra text appeared. Replacements now stay within the matching lines while retaining context for look-around. Added regressions pass, along with printer and targeted integration tests for both regex engines.",
  "assistant_messages": [
