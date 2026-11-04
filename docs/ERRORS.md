@@ -66,6 +66,10 @@ The last column is the `retryable` field.
 - The line never runs, or the program failed first. `exit_code` is set when the debugger reports
   it.
 - After a failure, read the output and check the program's arguments.
+- A Java `--test` whose command ended before any JVM with Peeky's debug agent waited: `The test
+  command ended (exit code 1) before any JVM started with Peeky's debug agent …`. The result's
+  `test` has the build's last lines: a `-Dtest` filter that names no test, a compile error, or
+  tests run in the build's own JVM ([Java 7.4](lang/java-cookbook.md#let-peeky-start-the-test)).
 - After `--set-at` changes, the message counts those that changed a value, and where they were:
   `The program finished without stopping at tides.c:33. The run made 6 changes by --set-at (at
   lines 32 and 35): compare with a run without them`. Nothing proves that a change came first, so
@@ -180,6 +184,9 @@ The last column is the `retryable` field.
 | A compared file that a link leads out of the root, on the worker's host or in your checkout: `Peeky compares only files inside the root: on your checkout, app/src/main.rs leads out of it through app/src, a link to …`. Nothing through the link was read ([REMOTE.md](REMOTE.md#a-rust-workspace)) | Point the link inside the root, or make it a file or directory there |
 | A compared file whose links loop, or are more than 40 in a row: `Peeky compares only files it can reach: on …, … leads into a link loop at …` | Break the loop, or shorten the chain |
 | A Rust workspace package a build may read whole, with a link out of the root: `Peeky builds only files inside …: … leads out of it through …` | Point the link inside the workspace, or make it a file there |
+| A Java `--test` command Peeky can't add its debug agent to the test JVM of alone: Ant, sbt and other tools, `-DforkCount=0`, or none it finds: `Peeky found no compiled classes of …`. Refused before the build runs, but the last ([Java 7.4](lang/java-cookbook.md#let-peeky-start-the-test)) | Give the `java` command the test runs. Or start the test waiting for a debugger, and attach with a config naming `class_roots` |
+| A Java `--test` attach Peeky can't prove reached the JVM it started: `Peeky can't prove that its debugger attached to the test JVM it started …`, or a test JVM listening on several ports. Nothing was read, and the build is stopped | Run the probe again. If it repeats, attach with a config |
+| A Java `--test` build that runs several test JVMs at once: `gradle started 2 test JVMs at once …` (Gradle's `maxParallelForks`, Maven's `forkCount`). Nothing was read, and the build is stopped | Select one test class (`--tests NAME` for Gradle, `-Dtest=NAME` for Surefire, `-Dit.test=NAME` for Failsafe) |
 | A Python whose `sqlite3` module has SQLite older than 3.30, or one without the JSON functions, `json_each`, `json_tree` or window functions: `Evidence store needs SQLite 3.30 or newer …`, refused before the store is opened. The message names what is missing | Run Peeky with a Python built with a newer SQLite |
 
 Inline assembly that can read a file means `.incbin`, `.include` or an assembler macro. This

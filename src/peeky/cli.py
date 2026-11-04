@@ -1359,6 +1359,8 @@ def probe(args):
             raise
         if isinstance(result.get("error"), dict):
             result["error"] = _remote_build_required(result["error"], args)
+    elif getattr(args.test_command, "kind", None) == "java":
+        result = _probe_java_test(args, root, request)
     else:
         result = run_probe(
             root,
@@ -1378,10 +1380,18 @@ def _probe_request(args):
     binary a worker must debug or None) for `peeky probe`'s arguments."""
     if args.label is not None and len(args.label) > 200:
         raise ValueError("--label is at most 200 characters")
-    args.test_command = _apply_test(args, "probe")
-    root, program, line, language, data = resolve(
-        args.target, args.at, args.config, tools=args.worker is None, binary=args.binary
-    )
+    args.test_command = test = _apply_test(args, "probe")
+    java_test = test is not None and test.kind == "java"
+    if args.timeout is None:
+        from peeky.java_test import TIMEOUT_S
+
+        args.timeout = TIMEOUT_S if java_test else 60.0
+    if java_test:
+        root, program, line, language, data = _java_test_target(args)
+    else:
+        root, program, line, language, data = resolve(
+            args.target, args.at, args.config, tools=args.worker is None, binary=args.binary
+        )
     if line is None:
         raise ValueError("probe requires --at <path>:<line>")
     _python_option(args, language)
@@ -1456,12 +1466,13 @@ def _apply_test(args, command):
     at = str(getattr(args, "at", None) or "")
     program = at.rpartition(":")[0] if re.fullmatch(r".+:[1-9][0-9]{0,6}", at) else at or None
     test = plan(words, root, program)
-    if test.kind == "java":
+    if test.kind == "java" and command != "probe":
         raise Refused(
             "UNSUPPORTED",
-            f"--test can't start a Java test yet ({test.words[0]}): start it waiting for a "
-            "debugger, and attach with a config, as docs/lang/java.md says",
-            "Nothing ran. Attach as docs/lang/java.md says.",
+            f"--test starts a Java test for a probe only ({test.words[0]}): a session's test "
+            "would have to outlive this command. Probe with --test, or start the test waiting "
+            "for a debugger and attach a session with a config (docs/lang/java.md)",
+            "Nothing ran. Use `peeky probe` with --test.",
         )
     os.environ.update(dict(test.environment))
     if test.kind == "python":
@@ -1478,9 +1489,145 @@ def _apply_test(args, command):
     return test
 
 
+def _java_test_target(args):
+    """(root, program, line, language, data) of a Java `--test` probe: the attached JVM's,
+    with no config, which Peeky makes once the test's JVM waits (_probe_java_test)."""
+    from peeky.errors import Refused
+    from peeky.java import bundle_directory
+    from peeky.java_setup import default_bundle
+
+    root = Path(args.target).resolve(strict=True)
+    at = str(args.at)
+    location, _, number = at.rpartition(":")
+    if not location or not re.fullmatch(r"[1-9][0-9]{0,6}", number):
+        raise ValueError("--at must be <path>:<line>, the .java file to stop in and its line")
+    program = _confined(root, location, "java-attach")
+    if not program.endswith(".java"):
+        raise Refused(
+            "INVALID_REQUEST",
+            f"A Java --test stops in a .java file of the project, not {program}",
+        )
+    # Before the build runs: without Peeky's adapter, nothing could attach.
+    bundle_directory(default_bundle())
+    return root, program, int(number), "java-attach", None
+
+
+def _probe_java_test(args, root, request):
+    """A Java `--test` probe (java_test, ADR 0009): run the test command with Peeky's agent
+    added to its test JVM, attach to that JVM once it waits, probe, then let the build end
+    until the deadline, where Peeky stops it. The result says what the test did (`test`)."""
+    from dataclasses import replace
+
+    from peeky import java_test
+    from peeky.errors import classify
+    from peeky.java_attach import JavaAttachTarget
+    from peeky.java_setup import default_bundle
+
+    progress = _progress(args)
+    started = time.monotonic()
+    # --timeout covers it all: the probe ends FINISH_MIN_S before the deadline, so the build
+    # may end on its own, and the build is stopped at the deadline (java_test.finish).
+    deadline = started + request.timeout
+    probed = deadline - java_test.FINISH_MIN_S
+    if request.timeout <= java_test.PROBE_MIN_S + java_test.FINISH_MIN_S:
+        raise ValueError(
+            f"A Java --test's --timeout covers the build, at least {java_test.PROBE_MIN_S:g} s "
+            f"of probing and {java_test.FINISH_MIN_S:g} s for the build to end: give more than "
+            f"{java_test.PROBE_MIN_S + java_test.FINISH_MIN_S:g} s (the default is "
+            f"{java_test.TIMEOUT_S:g})"
+        )
+    launch = java_test.prepare(args.test_command.words, _private_dir("tests"))
+    java_test.start(launch, os.getcwd())
+    if progress is not None:
+        progress(f"started {launch.tool}; its output goes to {launch.log}")
+    result = None
+    try:
+        found = java_test.find_jvm(launch, probed - java_test.PROBE_MIN_S, progress)
+        if found is None:
+            args.no_save = True
+            result = _unrun(request, started, "no-stop", _no_test_jvm(launch))
+        else:
+            pid, port = found
+            if progress is not None:
+                progress(f"the test JVM (pid {pid}) waits on port {port}; attaching")
+            target = JavaAttachTarget(
+                bundle=default_bundle(),
+                port=port,
+                sources=(request.program,),
+                class_roots=java_test.class_roots(root, request.program, launch),
+                launched=(pid, port),
+            )
+            left = max(1.0, probed - time.monotonic())
+            result = run_probe(
+                root, replace(request, timeout=left), adapter=target, progress=progress
+            )
+    except TimeoutError as exc:
+        args.no_save = True
+        result = _unrun(request, started, "timeout", classify(exc, session_closed=True))
+    except Exception as exc:
+        result = _unrun(request, started, "failed", classify(exc, session_closed=True))
+        result["refused_before_launch"] = True
+    finally:
+        # The test runs on after the probe, until the deadline at most.
+        finished = java_test.finish(launch, deadline, progress)
+        if result is not None:
+            result["test"] = finished
+            if launch.notes:
+                result["warnings"] = [*(result.get("warnings") or []), *launch.notes]
+    return result
+
+
+def _unrun(request, started, status, error):
+    """A Java `--test` probe's result where the debugger never ran, as a probe's own."""
+    from dataclasses import asdict
+
+    probe = {
+        **asdict(request),
+        "set": [list(change) for change in request.set],
+        "set_at": [list(point) for point in request.set_at],
+    }
+    probe.pop("edit"), probe.pop("expect_inputs")
+    return {
+        "probe": probe,
+        "status": status,
+        "error": error,
+        "warnings": [],
+        "hits": 0,
+        "pauses_ms": [],
+        "by_hit": [],
+        "rows": [],
+        "interventions": [],
+        "seconds": round(time.monotonic() - started, 3),
+    }
+
+
+def _no_test_jvm(launch):
+    """The error of a Java test command that ended before any JVM waited for Peeky."""
+    exited = launch.process.returncode
+    hint = {
+        "maven": "Check that the -Dtest filter names a test of the module, and that the "
+        "module's surefire forks a JVM (forkCount isn't 0 in its pom.xml)",
+        "gradle": "Check that --tests names a test of the project, and that the build reached "
+        "its test task",
+        "java": "Check that the command starts the JVM: its output is in the log",
+        "javac": "Check that the command starts javac: its output is in the log",
+    }[launch.tool]
+    return {
+        "code": "NO_STOP",
+        "message": (
+            f"The test command ended (exit code {exited}) before any JVM started with "
+            f"Peeky's debug agent, so nothing was attached: {launch.tool} ran no test "
+            "JVM, or failed before it (its last lines are in `test`)"
+        ),
+        "hint": hint,
+        "retryable": False,
+        "session_closed": True,
+    }
+
+
 def _test_warnings(result, test):
     """The test command's notes among a result's warnings, and what it ran as."""
-    if test is None or not isinstance(result, dict):
+    if test is None or not isinstance(result, dict) or "test" in result:
         return result
     result["test"] = {
         "command": test.shown,
@@ -1876,6 +2023,8 @@ def _probe_text(result, quiet=False):
     if warnings != list(result.get("warnings", ())):
         result = {**result, "warnings": warnings}
     text = _table(result, short_names=short_names, sent_before=sent_before)
+    if (test := result.get("test")) and "output_tail" in test:
+        text += "\n" + _test_text(test)
     if result.get("refused_before_launch"):
         return text
     if candidate := result.get("candidate"):
@@ -1919,6 +2068,20 @@ def _probe_text(result, quiet=False):
                 else f"\ncompare: {compare['hint']}"
             )
     return text
+
+
+def _test_text(test):
+    """What a Java `--test` probe's test did: how it ended, and its last lines."""
+    ended = (
+        f"stopped: {test['stopped']}"
+        if test.get("stopped")
+        else f"exited with {test.get('exit_code')}"
+    )
+    jvm = test.get("jvm")
+    attached = f"; its test JVM: pid {jvm['pid']}, port {jvm['port']}" if jvm else ""
+    lines = [f"test: `{test['command']}` {ended}{attached}", f"test output: {test['log']}"]
+    lines += [f"  {line}" for line in split_lines(test.get("output_tail") or "")[-15:]]
+    return "\n".join(lines)
 
 
 def sql(args):
@@ -6035,9 +6198,8 @@ def _main(argv, _job, _edits):
     sub.add_argument(
         "--timeout",
         type=float,
-        default=60,
-        help="Seconds for the whole probe, build included (default 60); then it stops the "
-        "program and fails with TIMEOUT",
+        help="Seconds for the whole probe, build included (default 60; 300 for a Java --test, "
+        "its build too); then it stops the program and fails with TIMEOUT",
     )
     sub.add_argument(
         "--until",
