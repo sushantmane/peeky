@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.0 (RELEASE-DATE)
+
+The first public release, on PyPI as `peeky-debug`.
+
 ### Values Peeky now reads
 
 - **C++ built by GCC:**

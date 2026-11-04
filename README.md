@@ -9,23 +9,25 @@ wrong or guessed value without a note. Where it can't prove a value, it withhold
 It supports Python, Java, C, C++ and Rust, all experimental. `peeky` never calls a model. Your
 agent, such as Copilot, Claude or Codex, calls Peeky, and so can you.
 
-> **Status:** experimental. Version 0.1.0 is tagged. Peeky isn't on PyPI yet. See Project status,
+> **Status:** experimental. Version 0.2.0 is on PyPI as `peeky-debug`. See Project status,
 > below.
 
 ## Install
 
-Peeky needs Python 3.11 or later. Install it as a tool, in an environment of its own, with
-[pipx][pipx] or [uv][uv]. Peeky isn't on PyPI yet, so for now install it from a clone of the
-repository:
+Peeky needs Python 3.11 or later. Install it from PyPI, where the package is `peeky-debug`, as a
+tool, in an environment of its own, with [pipx][pipx] or [uv][uv]:
 
 ```sh
-git clone https://github.com/sushantmane/peeky.git && cd peeky
-pipx install .    # or: uv tool install .
+pipx install peeky-debug    # or: uv tool install peeky-debug
 peeky --version
 ```
 
-`peeky --version` prints `peeky 0.1.0`. Run the examples below from the repository root. Once
-Peeky is on PyPI, `pipx install peeky-debug` or `uv tool install peeky-debug` installs it.
+`peeky --version` prints `peeky 0.2.0`. The package has the commands, not the examples. To run
+the examples below, clone the repository, and run them from its root:
+
+```sh
+git clone https://github.com/sushantmane/peeky.git && cd peeky
+```
 
 An environment of its own keeps Peeky and your other packages apart. Peeky needs debugpy 1.8.22
 exactly, the version its Python support is verified with. Another package on PyPI also has a
@@ -35,10 +37,10 @@ module named `peeky` (see The package name, below).
   installs. That is the root's `.venv` or `venv`, else the active virtual environment, else
   Peeky's own. `--python PATH` names another, and the output says which one ran. It must be
   CPython 3.11 or later. The project needs no debugpy of its own ([Python][python]).
-- **macOS:** the built-in `python3` is 3.9, too old for Peeky. There, `pip install` fails with
-  `No matching distribution found for debugpy==1.8.22`, which doesn't name the cause. Install
-  Python 3.11 or later, from python.org or Homebrew, and name it:
-  `pipx install --python python3.11 .` or `uv tool install --python 3.11 .`.
+- **macOS:** the built-in `python3` is 3.9, too old for Peeky. There, installing fails with
+  `No matching distribution found`, which doesn't name the cause. Install Python 3.11 or later,
+  from python.org or Homebrew, and name it:
+  `pipx install --python python3.11 peeky-debug` or `uv tool install --python 3.11 peeky-debug`.
 - **SQLite:** the evidence store needs SQLite 3.30 or later, with its JSON functions.
   `python3 -c 'import sqlite3; print(sqlite3.sqlite_version)'` prints the version.
 - **Other languages:** Python needs nothing more. Java needs JDK 17 or later, and its debugger
@@ -47,7 +49,7 @@ module named `peeky` (see The package name, below).
 
 ### The package name
 
-On PyPI the package will be `peeky-debug`, because `peeky` there is an
+On PyPI the package is `peeky-debug`, because `peeky` there is an
 [unrelated project][pypi-peeky]. Peeky's commands (`peeky`, `peeky-worker`, `peeky-probe`,
 `peeky-agent`) and its Python module (`peeky`) keep the name Peeky.
 
@@ -219,9 +221,8 @@ decisions, through Codex CLI. It is not the main interface.
 
 ## Project status
 
-- **Version:** 0.1.0, tagged on 2026-10-26, with a GitHub release. The
-  [CHANGELOG][changelog] lists what it covers, its known gaps and what changed since.
-- **Release:** a public release, and a package on PyPI, are pending.
+- **Version:** 0.2.0, the first public release, on PyPI as `peeky-debug`, with a GitHub release.
+  The [CHANGELOG][changelog] lists what it covers, its known gaps and what changed since 0.1.0.
 - **Languages:** Python, Java, C, C++ and Rust are all experimental. Each is qualified on narrow
   fixtures, and rounds of live agent evaluation shaped them
   ([HISTORY.md][evaluations]). None is general language support.

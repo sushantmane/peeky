@@ -56,7 +56,8 @@ change's details are in its pull request on GitHub.
 
 - The first tagged version, a GitHub release with a wheel and a source archive. See the
   [CHANGELOG](../CHANGELOG.md#010-2026-10-26).
-- Later changes are listed under [Unreleased](../CHANGELOG.md#unreleased).
+- Later changes are in the [CHANGELOG](../CHANGELOG.md): version 0.2.0, the first public release,
+  on PyPI as `peeky-debug`, and since then, under **Unreleased**.
 
 ## Live agent evaluations
 
