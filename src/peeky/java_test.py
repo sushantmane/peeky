@@ -482,7 +482,8 @@ def _one_at_a_time(launch, first, until):
             select = {
                 "gradle": "Select one test class (--tests NAME), or give the test task "
                 "maxParallelForks = 1",
-                "maven": "Select one test class (-Dtest=NAME), or run surefire with one fork",
+                "maven": "Select one test class (`-Dtest=NAME` for Surefire or `-Dit.test=NAME` "
+                "for Failsafe), or configure that test plugin with one fork",
             }.get(launch.tool, "Give a command that starts one JVM")
             raise _stopped(
                 f"{launch.tool} started {len(others) + 1} test JVMs at once (pids {first}, "

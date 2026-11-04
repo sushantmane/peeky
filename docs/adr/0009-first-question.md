@@ -99,12 +99,15 @@ class, hold both words exactly: the agent and `-Dpeeky.launch=<nonce>`. The buil
 doesn't qualify, though Maven's holds the nonce inside its `-Dmaven.surefire.debug=…` argument;
 nor does a shell that passes the words on. Its port is the one loopback port it listens on,
 read from the operating system (`/proc` on Linux, `lsof` on macOS), not from the build's
-output. A JVM listening on none, or more than one, is refused. Linux and macOS only.
+output. A test JVM listening on more than one is refused. One that listens on none yet is
+waited for: until it listens, the build ends (`NO_STOP`), or the time to find one, which ends
+35 s before `--timeout`'s deadline, runs out (`TIMEOUT`). Linux and macOS only.
 
 **One at a time.** Peeky watches for 2 s after the first test JVM waits. A build that
 runs another test JVM beside it (Gradle's `maxParallelForks`, Maven's `forkCount`) is refused,
 and stopped: Peeky attaches to one JVM, and the line may run in another. The message says to
-select one test class (`--tests`, `-Dtest`). Peeky doesn't serialize the build's forks for it.
+select one test class (`--tests` for Gradle, `-Dtest` for Surefire, `-Dit.test` for Failsafe).
+Peeky doesn't serialize the build's forks for it.
 
 **The proof.** After the debugger attaches, and before the JVM runs, Peeky checks that the JVM
 holds an established connection on its port whose other end is the debugger Peeky started.

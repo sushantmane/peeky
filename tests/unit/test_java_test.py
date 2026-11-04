@@ -264,6 +264,17 @@ def test_a_build_running_test_jvms_at_once_is_refused_after_it_started(tmp_path,
             "give the test task maxParallelForks = 1."
         )
         assert launch.jvm is None
+        # Maven's names Surefire's and Failsafe's selections both: Peeky can't tell which
+        # plugin forked the JVMs.
+        launch.tool = "maven"
+        with pytest.raises(Refused) as caught:
+            jt.find_jvm(launch, time.monotonic() + 30)
+        assert caught.value.hint == (
+            "Nothing was read; Peeky stopped the test. Select one test class (`-Dtest=NAME` for "
+            "Surefire or `-Dit.test=NAME` for Failsafe), or configure that test plugin with one "
+            "fork."
+        )
+        launch.tool = "gradle"
         # One alone, for the settling time: that one.
         monkeypatch.setattr(jt, "processes", lambda: {first: jvm})
         monkeypatch.setattr(jt, "SETTLE_S", 0.3)

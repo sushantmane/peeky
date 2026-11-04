@@ -841,7 +841,9 @@ peeky probe . --at core/src/main/java/pkg/Foo.java:LINE --capture a,b \
   classpath's directories inside the root. The `--at` file is the attach's one source.
 - **One test JVM at a time.** A build that runs a second test JVM beside the first (Gradle's
   `maxParallelForks`, Maven's `forkCount`) is refused, and stopped: Peeky attaches to one, and
-  the line may run in another. Select one test class (`--tests`, `-Dtest`).
+  the line may run in another. Select one test class (`--tests NAME` for Gradle, `-Dtest=NAME`
+  for Surefire, `-Dit.test=NAME` for Failsafe), or configure that test task or plugin with one
+  fork.
 - **The test runs on.** After the probe, Peeky waits for the build, then reports its exit code
   and last lines (`test` in `--json`); the whole log is in Peeky's state directory.
 - **Time.** `--timeout` defaults to 300 s here, and covers the build, the probe and the build's
