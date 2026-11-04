@@ -250,7 +250,7 @@
  "peeky_withheld_by_marker": {
   "withheld": 1
  },
- "peeky_values_printed": 2,
+ "peeky_values_printed": 0,
  "contaminated": false,
  "final_message": "Fixed: resubscription skipped the close marker, and receiving treated the channel as empty without checking closure. The receive path now checks the locked closed state before returning `Empty` or waiting; added regression tests pass. Peeky\u2019s probe at `broadcast.rs:792` returned `INVALID_BREAKPOINT`: \u201ca generic or inlined function whose code only the crates that use it compile,\u201d so it could not read values there.",
  "assistant_messages": [

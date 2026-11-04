@@ -231,7 +231,7 @@
  "peeky_mentions_in_commands": 10,
  "peeky_withheld_markers": 0,
  "peeky_withheld_by_marker": {},
- "peeky_values_printed": 12,
+ "peeky_values_printed": 9,
  "contaminated": false,
  "final_message": "Fixed proxy URL normalization dropping credentials: urllib3\u2019s `netloc` excludes authentication, so the fix restores it before rebuilding the URL. `peeky probe` at `requests/utils.py:982` showed `auth='user:pass'` but `netloc='example.com'`, confirming the cause. Added HTTP and HTTPS CONNECT regression tests; 217 offline tests passed, with unavailable fixture-dependent tests excluded.",
  "assistant_messages": [

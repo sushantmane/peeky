@@ -248,7 +248,7 @@
  "peeky_mentions_in_commands": 26,
  "peeky_withheld_markers": 0,
  "peeky_withheld_by_marker": {},
- "peeky_values_printed": 17,
+ "peeky_values_printed": 9,
  "contaminated": false,
  "final_message": "Fixed `cp`\u2019s missing variadic argument metadata with `.num_args(1..)`, restoring path completion after the first operand, and added a regression test. Peeky confirmed `shell = Zsh`; its direct generator probe was blocked: \u201cPeeky stops only in the analysed packages\u2019 files (coreutils).\u201d All 262 remaining `cp` tests pass; seven filesystem/privilege failures also reproduce on unchanged source.",
  "assistant_messages": [

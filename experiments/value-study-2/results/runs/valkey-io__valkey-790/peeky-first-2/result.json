@@ -263,7 +263,7 @@
  "peeky_mentions_in_commands": 29,
  "peeky_withheld_markers": 0,
  "peeky_withheld_by_marker": {},
- "peeky_values_printed": 5,
+ "peeky_values_printed": 10,
  "contaminated": false,
  "final_message": "Fixed `CLUSTER SHARDS` to select the actual slot-owning node rather than the shard\u2019s first member, which can remain the failed former primary after failover. Added regression coverage. `peeky probe` stopped at `src/cluster_legacy.c:5681`, the empty-array branch, and reported zero slots and NULL slot data; it marked those heap values \u201cunproven\u201d because it could not verify object lifetime.",
  "assistant_messages": [

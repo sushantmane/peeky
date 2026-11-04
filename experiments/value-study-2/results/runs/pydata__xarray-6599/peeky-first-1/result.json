@@ -215,7 +215,7 @@
  "peeky_mentions_in_commands": 12,
  "peeky_withheld_markers": 0,
  "peeky_withheld_by_marker": {},
- "peeky_values_printed": 11,
+ "peeky_values_printed": 9,
  "contaminated": false,
  "final_message": "Fixed timedelta conversion to use a zero-duration offset instead of a datetime epoch. Peeky at `duck_array_ops.py:434` showed timedelta data incorrectly paired with `datetime64('1970-01-01')`; it now shows `timedelta64(0, 'ns')`. Added regression coverage and documentation. The example should pass `azimuth_time.azimuth_time`, because evaluating supplied data rather than its index is an intentional API change.",
  "assistant_messages": [

@@ -1,5 +1,8 @@
 # Peeky agent guide
 
+**Your first question:** [FIRST.md](FIRST.md) has the one command it takes, from your project's
+test command. Come back here for the rest.
+
 Peeky stops a program at a line, reads its values, can change one, and runs it to its end. Cite
 a peeky command and its output for every claim. [COOKBOOK.md](COOKBOOK.md) and your language's
 cookbook have every rule, cited here by section (7.1: the same number in both).
@@ -23,51 +26,39 @@ Each question costs a run, and Peeky can't run every project (below).
 ## Your first command
 
 Run it from the project's root. Stop at `FILE:LINE`, the line after the one that computes the
-value: a breakpoint stops before its line runs. `--capture a,b.c` names what to read.
-`peeky describe`, with the probe's target and `--at FILE`, lists the lines and names. Your
-language's page has the rest: [Python](lang/python.md), [Java](lang/java.md),
-[C and C++](lang/c-cpp.md), [Rust](lang/rust.md).
-
-**Python, a test or a script in a repository.** The target is the root. `--run-module pytest`
-runs a pytest test, as `python -m pytest` does. Its arguments go after `--`:
+value: a breakpoint stops before its line runs. `--capture a,b.c` names what to read. After
+`--test --` goes the command that runs the failing test, as you would type it. Peeky reads it
+and runs the program or test it names under the debugger; a `warning:` says where that run
+differs from the command's, and what it can't run so is refused:
 
 ```sh
-peeky probe . --at src/pkg/mod.py:LINE --capture a,b.c \
-  --run-module pytest -- -q tests/test_x.py::test_y
+peeky probe . --at src/pkg/mod.py:LINE --capture a,b.c --test -- python -m pytest -q tests/test_x.py::test_y
 ```
 
-- `--run script.py` runs a script that reaches the line. Without either, the `--at` file runs as
-  the program: `peeky probe . --at scripts/job.py:LINE`.
-- `--at` and `--run` must be inside the root; a package's file in its `.venv` works. A project
-  installed without `-e` runs its `site-packages` copy, not its source: `pip install -e .`.
-- It runs on the root's `.venv` or `venv`, else the active virtual environment. For the `python`
-  on `PATH`, such as conda's, add `--python python`. The `python:` line says which ran.
+`peeky describe . --at FILE --test -- <the same test command>` lists the lines and names; for
+Java, a probe at a line with no code names the lines nearby. Your language's page has the rest:
+[Python](lang/python.md), [Java](lang/java.md), [C and C++](lang/c-cpp.md), [Rust](lang/rust.md).
 
-**Java, a Maven or Gradle test.** Run `peeky setup-java` once, with JDK 17 on `PATH`, so that it
-debugs older JDKs too (7.3). Start the test waiting for a debugger, then attach:
-
-```sh
-mvn test -Dtest='FooTest#bar' -Dmaven.surefire.debug > test.log 2>&1 &
-# Gradle: ./gradlew test --tests 'pkg.FooTest' --debug-jvm > test.log 2>&1 &
-peeky probe . --config attach.json --at src/main/java/pkg/Foo.java:LINE --capture a,b.c
-```
-
-Probe once `test.log` says `Listening for transport dt_socket`. `attach.json` names the files
-you stop in and their classes (Gradle: `build/classes/java/main`):
-`{"port": 5005, "sources": ["src/main/java/pkg/Foo.java"], "class_roots": ["target/classes"]}`.
-
-**Java, a class with `main`:** `run.json` lists every `.java` file it needs, and no Maven or
-Gradle dependencies: `{"sources": ["pkg/Main.java"], "main_class": "pkg.Main"}`. Then:
-`peeky probe . --config run.json --at pkg/Main.java:LINE --capture a,b.c`.
-
-**C or C++:** `peeky probe DIR --at file.c:LINE --capture a,b.c -- ARGS`. Peeky builds the `.c` or
-`.cpp` files of one directory itself, as C11 or C++17, with the headers beside them, and no
-flags or libraries. With a project's own build (Make, CMake, autotools), build with clang
-`-O0 -g -gdwarf-5 -grecord-command-line`, then add `--binary ./prog` (sessions too).
-
-**Rust:** `peeky probe CRATE --at src/main.rs:LINE --capture a,b.c` for a `cargo new` crate. A crate
-with dependencies, or a workspace: run `cargo vendor --locked vendor`, name what to analyse and run
-in `rust.json`, then `peeky build . --config rust.json`, and probe with that `--config` (7.2).
+- **Python:** `python -m pytest …` runs as `--run-module pytest -- …`, and `python script.py …`
+  as `--run script.py -- …`, on the command's interpreter. The `pytest` script is refused: the
+  message gives its `python -m pytest`. `python -m pytest` puts the root first on `sys.path`, so
+  a package at the root (flat layout) is imported from the source even where a copy is
+  installed; a `src/` layout's package is imported as installed: `pip install -e .`.
+- **Java:** `mvn`, `./gradlew`, `java` or `javac`, after `peeky setup-java` once, with JDK 17 on
+  `PATH` (7.3). Peeky starts the test with its debug agent, attaches, and lets it end. For a JVM
+  you started yourself (`-Dmaven.surefire.debug`, `--debug-jvm`), attach with `--config
+  attach.json`: `{"port": 5005, "sources": ["src/main/java/pkg/Foo.java"], "class_roots":
+  ["target/classes"]}` (7.4). A class with `main`: `{"sources": ["pkg/Main.java"],
+  "main_class": "pkg.Main"}`.
+- **C or C++:** the test's binary and its arguments, built with clang `-O0 -g -gdwarf-5
+  -grecord-command-line` (`--binary ./prog`), run in Peeky's environment. `ctest -R NAME` works
+  for a test ctest would run in the root with no environment of its own. Without a project
+  build, `peeky probe DIR --at file.c:LINE` builds one directory's `.c` or `.cpp` files itself.
+- **Rust:** `cargo test …` or `cargo run …`: Peeky makes the workspace config, builds it, and
+  runs the test's executable itself, in its own environment. A runner, or a variable that
+  changes Cargo's build (`RUSTFLAGS` but lints), is refused. Vendor dependencies first: `cargo
+  vendor --locked vendor` (7.2). A `cargo new` crate without dependencies: `peeky probe CRATE
+  --at src/main.rs:LINE`.
 
 ## The loop
 
@@ -100,7 +91,7 @@ Report what you observed, changed and verified, quoting the commands.
    panic or loop forever. A change the build rules out is refused before launch (exit 2; 2.3, 7).
 4. **`--set` applies once, at hit 1.** `--set-hit N` picks another, with `--hits` N or more;
    other hits only observe. `--set-at LINE@HIT NAME=VALUE` changes at any line's hit, `--at`'s
-   too. Repeat it per change: `--set-at 9@2 n=0 --set-at 9@5 n=0`. A probe takes at most 8
+   too. Repeat it per change: `--set-at 9@2 n=0 --set-at 9@5 n=0` (`'9@2 n=0'` works too). A probe takes at most 8
    `--set` and `--set-at`: split more over probes or edit. `@all`: each stop while the probe
    runs, at most 100. `x=@before` undoes a change, as to skip a statement (2.8).
 5. **Hits count stops, not passes.** A line with a macro's or a block's code, or a closure, can

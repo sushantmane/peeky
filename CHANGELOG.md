@@ -31,6 +31,77 @@
 
 ### Other changes
 
+- **CI runs on GitHub Actions, in the image the Docker mirror uses.** One job builds
+  `scripts/ci_linux`'s image into the Actions cache. Lane jobs then run `run_lanes.sh`'s lanes in
+  it through `scripts/ci_linux/docker_lanes.sh`, which picks lanes with `PEEKY_LANES`; a laptop
+  runs the same script. That brings LLVM 20, GCC's C lane and GDB's DAP into CI. New `py311` and
+  `py313` lanes run the unit and integration tests on CPython 3.11 and 3.13, installed in the image
+  by uv beside Ubuntu's 3.12. Remote SSH e2e stays on the runner. Runners are pinned to Ubuntu
+  24.04.
+
+- **The first question on one page (ADR 0009).** `docs/FIRST.md`, 1.2 KB, gives the one
+  `--test` command per language and three rules; the guide, `peeky --help`, `peeky probe --help`,
+  the README and the skill open with it. 86 of 87 round 2 attempts read the 20 KB guide and
+  their language's page before their first probe. The refusals they met most now take the input
+  or name the next command:
+  - `--set-at '966@1 url=x'`, one word, is taken as its two (9 refusals in round 2).
+  - A Java config's absolute path inside the target directory is taken (6); one outside is
+    refused naming the directory.
+  - `--run-module` with another module gives the `runpy` script to run it from (7).
+  - `NO_STOP` on a JVM you attached to says the JVM may not run the line, and gives `--test`
+    (30).
+- **`--test`: the project's own test command names what Peeky runs (ADR 0009).** `peeky probe .
+  --at FILE:LINE --capture a --test -- <command>`, and `session start` and `describe` too. Peeky
+  reads the command, runs the target it names, and says where that run differs:
+  - Python: `python -m pytest …` runs as `--run-module pytest`, and `python script.py …` as
+    `--run`, on the interpreter that command runs. A `pytest` script is refused: Peeky wouldn't
+    run its lines, and `python -m pytest` may import other code. The message gives the `python
+    -m pytest` command, on the interpreter the script's `#!` line names.
+  - Rust: `cargo test [-p P] [--test T | --lib] [--features …] [filter] [-- args]` and `cargo run`
+    make the workspace config: the `--at` file's package is analysed, and the build runs when
+    none of the config is current. A build refused for its provenance stays refused, as with
+    `--build`. The config is saved in the state directory and named in `--json`. A runner Cargo
+    would run the test through, your environment's variables that would change Cargo's build or
+    run (`RUSTFLAGS` but lints, `CARGO_PROFILE_*`, `RUSTUP_TOOLCHAIN`, …), `$CARGO_HOME`'s
+    configuration where Peeky's build doesn't read it, and a cargo or rustc other than Peeky's
+    pinned toolchain (by release, commit and host: a cargo path, `rust-toolchain.toml`, a rustup
+    override) are refused. A note says the test runs in Peeky's environment, not yours.
+  - C and C++: `./prog args` is `--binary ./prog -- args`; `ctest -R NAME` runs its one test.
+    ctest's options other than selection and output (`--repeat`, `-j`, `--timeout`, …) are
+    refused, and so is a test ctest would run in another directory, with its own `ENVIRONMENT`
+    or `ENVIRONMENT_MODIFICATION`, or another property that changes its run. A note says what of
+    your environment the binary gets.
+  - Environment assignments before the command apply to a Python run. Peeky runs Cargo and a
+    binary in an environment of its own: there, one that wouldn't reach them is refused, and a
+    `RUSTFLAGS` of lints alone gets a note. A command `--test` can't
+  - Java (probes): `mvn …`, `./gradlew …`, `java …` and `javac …`. Peeky adds JDWP's agent
+    (suspended, on a port the JVM picks) and a random mark to the test JVM alone: through
+    `-Dmaven.surefire.debug`, a Gradle init script for `Test` tasks, or the JVM's own options.
+    It finds that JVM by those exact options and its one loopback port (`/proc`, `lsof`), and
+    after attaching proves the JVM's connection ends at Peeky's own debugger; otherwise nothing
+    is read. The test runs on to its end, and `test` gives its exit code and last lines.
+    `--timeout` defaults to 300 s for it, and covers the build: the probe ends 15 s before the
+    deadline, and the build is stopped at it. Gradle's and Maven's own fork settings are kept: a
+    build that runs several test JVMs at once is refused and stopped, as Peeky attaches to one.
+    Ant, `--debug-jvm`, `-DforkCount=0` and Java sessions are refused, saying what to do
+    instead. A refusal after the test started says that nothing was read, not that nothing ran.
+  - Environment assignments before the command apply to a Python or Java run. Peeky runs Cargo
+    and a binary in an environment of its own: there, one that wouldn't reach them is refused,
+    and a `RUSTFLAGS` of lints alone gets a note. A command `--test` can't
+    name a target from (a shell line, `make`, `python -m` another module, `cargo test
+    --release`) is refused before anything runs, saying what to give instead. With `--config`,
+    `--run`, `--run-module`, `--python`, `--binary`, `--arg` or `--worker` it is refused. The
+    worker protocol is unchanged.
+  - A Rust probe in an analysed package's file its build didn't read says it may be behind a
+    `#[cfg]` left off, such as a feature (tokio-util's `delay_queue.rs` without `full`).
+- **Where round 2's `peeky-first` set-up went, and ADR 0009.**
+  `experiments/value-study-2/SETUP_COST.md` sorts every tool call before each attempt's first
+  stop (`harness/setup_cost.py`; a doc's example output printed in the same call isn't taken
+  for a stop). The median attempt that stopped (68 of 87) spent 14 calls, 11.6 AI credits and
+  75 s before it. 86 of 87 read the guide, `PROJECT.md` and their language's page before their
+  first probe, and the median Java attempt started 3 JVMs by hand. [ADR
+  0009](docs/adr/0009-first-question.md) designs `--test`, which takes the project's own test
+  command, and a first-probe page of about 2 KB.
 - **Rust workspaces: an integration test finds its package's binaries (#488).** bat's
   integration test runs `bat` through assert_cmd's `Command::cargo_bin`, which reads
   `CARGO_BIN_EXE_bat`, else looks beside the test's own executable. Peeky gave neither, so the

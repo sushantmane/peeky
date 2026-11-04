@@ -187,7 +187,7 @@
  "peeky_mentions_in_commands": 14,
  "peeky_withheld_markers": 0,
  "peeky_withheld_by_marker": {},
- "peeky_values_printed": 0,
+ "peeky_values_printed": 13,
  "contaminated": false,
  "final_message": "Fixed `ACL LOAD` dereferencing the replica\u2019s primary connection\u2019s intentionally null ACL user. `peeky session get original` showed `0x0000000000000000` at `src/acl.c:2382`; stepping triggered an exception. Reload now skips clients without ACL users. Added regression coverage for continued replication and subscriptions. Build and ACL suite pass.",
  "assistant_messages": [

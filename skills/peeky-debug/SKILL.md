@@ -5,10 +5,10 @@ description: Debug a running program with the peeky CLI — stop at a line, read
 
 # Debugging with peeky
 
-Follow docs/AGENT_GUIDE.md in the peeky repository. Its first two sections say when a probe beats a print, and the first command for a Python, Java, C, C++ or Rust project. Short form:
+Start with docs/FIRST.md in the peeky repository: the first question is one command, from the project's own test command. docs/AGENT_GUIDE.md has the rest: when a probe beats a print, and every rule. Short form:
 
-1. `peeky describe <target>`: valid breakpoint lines and what can be read or changed.
-2. `peeky probe <target> --at <file>:<line> --capture <a,b.c>`: observe real values.
+1. `peeky probe . --at <file>:<line> --capture <a,b.c> --test -- <the command that runs the failing test>`, from the project's root: observe real values (`python -m pytest …`, `mvn test …`, `./gradlew test …`, `cargo test …`, `./build/prog ARGS`). Peeky runs what the command names, and a `warning:` says where its run differs.
+2. `peeky describe . --at <file> --test -- <the same test command>`: valid breakpoint lines and what can be read or changed (Java: a probe at a line with no code names the lines nearby).
 3. `peeky probe ... --set <local>=<value>`: test the hypothesis. Values must be literals, and they are applied once, at hit 1 or at `--set-hit N`. This is evidence only. Always read `warnings`.
 4. Edit the source generally, then `peeky verify <target> --check <checker> --old '<text>' --new '<text>'`. For Python, `--check-command '<test command>'` in place of `--check` runs the project's tests on the edited copy.
 5. Report the commands, the observed values, the intervention's effect and the verify result. Never claim a fix without `passed: True` from `verify`.
