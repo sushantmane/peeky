@@ -652,6 +652,7 @@ def _cargo(words, assignments, root, program, environment, cwd):
     _runner(tables, environment)
     _unread_configuration(tables)
     notes += _cargo_variables(environment, assignments, tables)
+    _same_toolchain(words[0], root, environment, cwd)
     return TestCommand(
         "rust",
         tuple(words),
@@ -785,6 +786,68 @@ def _section(table, key):
 def _targets(table):
     """A configuration's `[target.*]` tables, whether they apply here or not."""
     return [value for value in _section(table, "target").values() if isinstance(value, dict)]
+
+
+def _toolchain_of(tool, cwd, environment):
+    """(release, commit hash, host) of a Rust tool, by its `-vV`, run in ``cwd`` with
+    ``environment``, as a rustup proxy picks its toolchain there; None if it can't say."""
+    try:
+        found = subprocess.run(
+            [str(tool), "-vV"],
+            cwd=cwd,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    fields = dict(line.partition(": ")[::2] for line in split_lines(found.stdout) if ": " in line)
+    if found.returncode != 0 or not all(fields.get(k) for k in ("release", "commit-hash", "host")):
+        return None
+    return fields["release"], fields["commit-hash"], fields["host"]
+
+
+def _same_toolchain(cargo, root, environment, cwd):
+    """Refuse a test command whose Cargo, or the rustc that Cargo runs, isn't the toolchain
+    Peeky builds with (PEEKY_RUST_CARGO and PEEKY_RUST_RUSTC, else rustup's pinned one): a
+    build script or procedural macro that reads the compiler's version would build other code.
+    The command's are asked as it runs them: its cargo, and the `rustc` on its PATH (RUSTC and
+    `build.rustc` are refused apart), from the root, in its environment, so that rustup's
+    proxies pick what a rust-toolchain.toml or a directory override names."""
+    from peeky.cli import RUST_VERSION, _env_tool, _rustup
+    from peeky.processes import without_credentials
+
+    theirs = {"cargo": _which(cargo, environment, cwd), "rustc": _which("rustc", environment, cwd)}
+    ours = {
+        "cargo": _env_tool("PEEKY_RUST_CARGO") or _rustup("cargo"),
+        "rustc": _env_tool("PEEKY_RUST_RUSTC") or _rustup("rustc"),
+    }
+    for tool in ("cargo", "rustc"):
+        mine = ours[tool] and _toolchain_of(ours[tool], root, without_credentials(os.environ))
+        if not mine:
+            raise _unsupported(
+                f"Peeky can't read its own {tool}'s version ({ours[tool] or 'none found'}): "
+                f"install Rust {RUST_VERSION} (`rustup toolchain install {RUST_VERSION}`), or "
+                f"set PEEKY_RUST_{tool.upper()}"
+            )
+        command = theirs[tool] and _toolchain_of(theirs[tool], root, environment)
+        if not command:
+            raise _unsupported(
+                f"Peeky can't read the version of the {tool} the test command runs "
+                f"({theirs[tool] or f'no {tool} on its PATH'}), so it can't tell that it is "
+                f"Peeky's Rust {mine[0]}: run the test with that toolchain, or without --test"
+            )
+        if command != mine:
+            shown = "Rust {} (commit {}, host {})".format
+            raise _unsupported(
+                f"The test command's {tool} is {shown(command[0], command[1][:9], command[2])}"
+                f" ({theirs[tool]}, run from {root}), and Peeky builds with "
+                f"{shown(mine[0], mine[1][:9], mine[2])} ({ours[tool]}): a build script or "
+                "procedural macro that reads the compiler's version would build other code. "
+                f"Make the command use Rust {mine[0]}: its cargo, the project's "
+                "rust-toolchain.toml, or `rustup override`; or run without --test"
+            )
 
 
 def _host():

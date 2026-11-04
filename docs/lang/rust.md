@@ -41,8 +41,9 @@ Peeky debugs Rust with lldb-dap, LLVM's debugger.
   cargo's `--` go to the test. `--release`, `--doc`, `--workspace`, `--example`,
   `--no-default-features` and a toolchain (`+nightly`) are refused, saying why, and so are a
   runner and the variables that would change Cargo's build or run (`RUSTFLAGS` but lints,
-  `CARGO_PROFILE_*`, `RUSTUP_TOOLCHAIN`, …). The test runs in Peeky's environment, not yours,
-  and the result says so
+  `CARGO_PROFILE_*`, `RUSTUP_TOOLCHAIN`, …). So is a cargo or rustc other than Peeky's pinned
+  toolchain, by its path, `rust-toolchain.toml` or `rustup override`. The test runs in Peeky's
+  environment, not yours, and the result says so
   ([ADR 0009](../adr/0009-first-question.md#3-rust-the-config-from-cargo-tests-words)).
 - A workspace's analysed packages may be edition 2018 too
   ([ADR 0008](../adr/0008-native-project-reach.md#verified-for-phase-2)).

@@ -163,6 +163,12 @@ environment. So `--test` refuses, before anything runs:
   `RUSTC_WRAPPER`, `RUSTC_WORKSPACE_WRAPPER`, `RUSTC_BOOTSTRAP` and `RUSTUP_TOOLCHAIN`.
 - **`$CARGO_HOME`'s configuration,** where Peeky's build doesn't read it (it isn't above the
   workspace), with a key that may change the build or the run.
+- **Another toolchain:** the command's cargo, and the `rustc` on its `PATH` that Cargo runs,
+  are asked `-vV` from the root in the command's environment, so that rustup's proxies pick
+  what a `rust-toolchain.toml`, a directory override or the cargo's own path names. A release,
+  commit hash or host other than Peeky's pinned toolchain's (`PEEKY_RUST_CARGO`,
+  `PEEKY_RUST_RUSTC`, else rustup's 1.96.0) is refused, naming both: a build script or
+  procedural macro that reads the compiler's version would build other code.
 
 Cargo, build scripts and the test get none of your environment: the test gets `PATH`, `LC_ALL=C`,
 a `HOME` of Peeky's, `CARGO_MANIFEST_DIR` and, in an integration test, `CARGO_BIN_EXE_<name>`.
@@ -194,6 +200,7 @@ lines point to it, and `peeky probe --help` shows its command first.
 | Ant, and tools Peeky can't add the agent to | The agent would reach the build tool's JVM, or none |
 | `forkCount=0`, the command's own `--debug-jvm` or `maven.surefire.debug` | The tests would run in the build's JVM, or wait on a port Peeky didn't choose |
 | `cargo test --release`, `--doc`, `--workspace`, `--example` | Peeky builds one test target at opt-level 0 |
+| A cargo or rustc other than Peeky's pinned toolchain (by path, `rust-toolchain.toml` or a rustup override) | Peeky builds with its own toolchain; code that reads the compiler's version could differ |
 | A Cargo runner; your environment's variables that change Cargo's build or run (`RUSTFLAGS` but lints, `CARGO_PROFILE_*`, `CARGO_BUILD_TARGET`, `CARGO_TARGET_*` but its directory, `RUSTC_WRAPPER`, `RUSTUP_TOOLCHAIN`); `$CARGO_HOME`'s configuration where Peeky's build doesn't read it | Peeky runs the test's executable itself, and Cargo in an environment of its own |
 | A `pytest` script | Peeky runs pytest only as `python -m pytest`, which isn't what the script runs |
 | ctest's options but selection and output, and a test property that changes its run | Peeky runs the one test's command once, in the target directory and its own environment |

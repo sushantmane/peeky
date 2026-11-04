@@ -20,6 +20,34 @@ def executable(path, text):
     return path
 
 
+# A Rust tool's `-vV`. ``toolchain`` None: a rustup proxy, which picks its toolchain as
+# rustup does, from RUSTUP_TOOLCHAIN, the directory's rust-toolchain.toml, then a directory
+# override in $RUSTUP_HOME/settings.toml (as `"PATH" = "TOOLCHAIN"` lines), else 1.96.0.
+FAKE_RUST = """#!@PYTHON@
+import os, re, sys
+toolchain = @TOOLCHAIN@
+if toolchain is None:
+    toolchain = os.environ.get("RUSTUP_TOOLCHAIN")
+    if not toolchain and os.path.exists("rust-toolchain.toml"):
+        toolchain = re.search(r'channel = "(.*)"', open("rust-toolchain.toml").read())[1]
+    settings = os.path.join(os.environ["RUSTUP_HOME"], "settings.toml")
+    for line in open(settings) if not toolchain and os.path.exists(settings) else ():
+        where, _, name = line.strip().partition(" = ")
+        if os.path.realpath(where.strip('"')) == os.path.realpath(os.getcwd()):
+            toolchain = name.strip('"')
+release, commit = {
+    "1.96.0": ("1.96.0", "30a34c6821b57de0aaec83a901aca39f88f6778c"),
+    "nightly": ("1.99.0-nightly", "4a1b2c3d4e5f60718293a4b5c6d7e8f901234567"),
+}[toolchain or "1.96.0"]
+name = os.path.basename(sys.argv[0])
+print(f"{name} {release}\\nrelease: {release}\\ncommit-hash: {commit}\\nhost: x86_64-peeky-test")
+""".replace("@PYTHON@", sys.executable)
+
+
+def fake_rust(toolchain):
+    return FAKE_RUST.replace("@TOOLCHAIN@", repr(toolchain))
+
+
 @pytest.fixture
 def project(tmp_path, monkeypatch):
     """A project directory, the current one, with a `bin` of fake interpreters first on
@@ -30,9 +58,20 @@ def project(tmp_path, monkeypatch):
     python = executable(bin_ / "python3", "#!/bin/sh\nexit 0\n")
     executable(bin_ / "pytest", f"#!{python}\nimport pytest\n")
     monkeypatch.setenv("PATH", f"{bin_}{os.pathsep}{os.environ['PATH']}")
-    # Cargo's variables and configuration are the test's own, not the machine's.
+    # Cargo's variables, configuration and toolchains are the test's own, not the machine's:
+    # rustup's proxies on PATH, its pinned 1.96.0 Peeky's, and a nightly.
     (tmp_path / "cargo-home").mkdir()
     monkeypatch.setenv("CARGO_HOME", str(tmp_path / "cargo-home"))
+    (tmp_path / "rustup").mkdir()
+    monkeypatch.setenv("RUSTUP_HOME", str(tmp_path / "rustup"))
+    for tool in ("cargo", "rustc"):
+        executable(bin_ / tool, fake_rust(None))
+        for toolchain in ("1.96.0", "nightly"):
+            pinned = tmp_path / "toolchains" / toolchain / "bin" / tool
+            executable(pinned, fake_rust(toolchain))
+        monkeypatch.setenv(
+            f"PEEKY_RUST_{tool.upper()}", str(tmp_path / f"toolchains/1.96.0/bin/{tool}")
+        )
     for name in list(os.environ):
         if name in tc._FLAGS or name in tc._RUSTC or name.startswith(tc._CARGO_CHANGES):
             monkeypatch.delenv(name)
@@ -532,3 +571,35 @@ def test_targets_are_discovered_as_cargo_discovers_them(workspace):
     assert test.config["run"] == {"bin": "tool", "package": "app"}
     error = refused(["cargo", "run", "--bin", "nope"], workspace, "util/src/lib.rs")
     assert "no bin target nope in the packages Cargo selects (app, util)" in str(error)
+
+
+def test_a_toolchain_other_than_peekys_is_refused(workspace, tmp_path):
+    # Peeky builds with its pinned Rust 1.96.0; the command's cargo and the rustc it runs are
+    # compared with it, as the command would pick them, before anything runs.
+    at, run = "util/src/lib.rs", ["test", "-p", "util", "--lib"]
+    assert tc.plan(["cargo", *run], workspace, at).kind == "rust"
+    # A cargo named by its path.
+    nightly = str(tmp_path / "toolchains/nightly/bin/cargo")
+    error = refused([nightly, *run], workspace, at)
+    assert "The test command's cargo is Rust 1.99.0-nightly (commit 4a1b2c3d4, host " in str(error)
+    assert f"x86_64-peeky-test) ({nightly}, run from {workspace})" in str(error)
+    assert "Peeky builds with Rust 1.96.0 (commit 30a34c682, host x86_64-peeky-test)" in str(error)
+    # The project's rust-toolchain.toml, which rustup's proxies read in the root.
+    (workspace / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "nightly"\n')
+    assert "command's cargo is Rust 1.99" in str(refused(["cargo", *run], workspace, at))
+    # Peeky's own cargo by its path, but the rustc on PATH, which Cargo runs, is nightly's.
+    pinned = str(tmp_path / "toolchains/1.96.0/bin/cargo")
+    error = refused([pinned, *run], workspace, at)
+    assert "The test command's rustc is Rust 1.99.0-nightly" in str(error)
+    (workspace / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "1.96.0"\n')
+    assert tc.plan(["cargo", *run], workspace, at).kind == "rust"
+    (workspace / "rust-toolchain.toml").unlink()
+    # A directory override (`rustup override set nightly` in the root).
+    settings = tmp_path / "rustup/settings.toml"
+    settings.write_text(f'"{workspace}" = "nightly"\n')
+    error = refused(["cargo", *run], workspace, at)
+    assert "cargo is Rust 1.99.0-nightly" in str(error) and "rustup override" in str(error)
+    settings.unlink()
+    # A cargo that can't say which it is.
+    executable(tmp_path / "bin/cargo", "#!/bin/sh\nexit 1\n")
+    assert "can't read the version of the cargo" in str(refused(["cargo", *run], workspace, at))

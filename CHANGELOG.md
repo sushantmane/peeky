@@ -43,9 +43,10 @@
     none of the config is current. A build refused for its provenance stays refused, as with
     `--build`. The config is saved in the state directory and named in `--json`. A runner Cargo
     would run the test through, your environment's variables that would change Cargo's build or
-    run (`RUSTFLAGS` but lints, `CARGO_PROFILE_*`, `RUSTUP_TOOLCHAIN`, …), and `$CARGO_HOME`'s
-    configuration where Peeky's build doesn't read it are refused. A note says the test runs in
-    Peeky's environment, not yours.
+    run (`RUSTFLAGS` but lints, `CARGO_PROFILE_*`, `RUSTUP_TOOLCHAIN`, …), `$CARGO_HOME`'s
+    configuration where Peeky's build doesn't read it, and a cargo or rustc other than Peeky's
+    pinned toolchain (by release, commit and host: a cargo path, `rust-toolchain.toml`, a rustup
+    override) are refused. A note says the test runs in Peeky's environment, not yours.
   - C and C++: `./prog args` is `--binary ./prog -- args`; `ctest -R NAME` runs its one test.
     ctest's options other than selection and output (`--repeat`, `-j`, `--timeout`, …) are
     refused, and so is a test ctest would run in another directory, with its own `ENVIRONMENT`

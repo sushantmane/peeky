@@ -1738,3 +1738,31 @@ def test_the_test_command_makes_the_config_and_builds_it_when_needed(
         assert code == 0 and [row["value"] for row in rows] == ["1"], rows
     finally:
         run(capsys, "session", "close", "--name", "tested")
+
+
+@pytest.mark.timeout(300)
+def test_the_test_command_runs_on_peekys_toolchain_or_is_refused(workspace, capsys, monkeypatch):
+    # Peeky builds with its pinned toolchain: a test command whose cargo, or the rustc rustup
+    # picks for it in the root, is another is refused before anything is built.
+    other = shutil.which("rustup") and subprocess.run(
+        ["rustup", "which", "--toolchain", "nightly", "cargo"], capture_output=True, text=True
+    )
+    if not other or other.returncode != 0:
+        pytest.skip("needs rustup with a nightly toolchain installed")
+    monkeypatch.chdir(workspace)
+    argv = ["probe", ".", "--at", "util/src/lib.rs:3", "--capture", "x", "--json", "--test", "--"]
+    code = main([*argv, other.stdout.strip(), "run", "-p", "app"])
+    captured = capsys.readouterr()
+    error = json.loads(captured.out)["error"]
+    assert code == 2 and "The test command's cargo is Rust" in error["message"], error
+    assert "-nightly" in error["message"] and os.environ["PEEKY_RUST_CARGO"] in error["message"]
+    assert "building" not in captured.err
+    (workspace / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "nightly"\n')
+    try:
+        code = main([*argv, "cargo", "run", "-p", "app"])
+        captured = capsys.readouterr()
+        error = json.loads(captured.out)["error"]
+        assert code == 2 and "-nightly" in error["message"], error
+        assert "building" not in captured.err
+    finally:
+        (workspace / "rust-toolchain.toml").unlink()
