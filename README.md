@@ -228,10 +228,12 @@ decisions, through Codex CLI. It is not the main interface.
 - **Also experimental:** Java attach, remote workers and `peeky-agent`.
 - **Not supported:** CUDA ([planned][cuda]), Kubernetes workers, several users
   per worker, and attach for languages other than Java.
-- **CI:** GitHub Actions, Linux only: Python 3.11, 3.12 and 3.13, Java 17, C, C++ (clang and
-  GCC) and Rust with LLVM 18 and 20, GDB's DAP, a remote SSH lane and a wheel smoke test. Its
-  lane jobs run in the Docker image a laptop uses, `scripts/ci_linux` ([TESTING.md][docker-mirror]).
-  macOS is used for development, but isn't in the CI matrix.
+- **CI:** GitHub Actions. On Linux: Python 3.11, 3.12 and 3.13, Java 17, C, C++ (clang and GCC)
+  and Rust with LLVM 18 and 20, GDB's DAP, a remote SSH lane and a wheel smoke test. Its lane jobs
+  run in the Docker image a laptop uses, `scripts/ci_linux` ([TESTING.md][docker-mirror]). On
+  macOS (Apple silicon), once the repository is public: Python 3.12, Java 17, and C, C++ and Rust
+  with Xcode's clang and lldb-dap ([TESTING.md][macos-lanes]). Until then, the macOS lanes run on
+  a developer's Mac.
 - **CI minutes:** the repository is private, so CI uses the account's Actions minutes. When they
   run out, jobs don't start until a budget covers more; `scripts/ci_linux/docker_lanes.sh` runs
   the same lanes locally.
@@ -296,6 +298,7 @@ Apache License 2.0: see [LICENSE][license] and [NOTICE][notice]. The Java adapte
 [agent-loop]: https://github.com/sushantmane/peeky/blob/main/docs/AGENT_LOOP.md
 [cuda]: https://github.com/sushantmane/peeky/blob/main/docs/ROADMAP.md#cuda-61
 [docker-mirror]: https://github.com/sushantmane/peeky/blob/main/docs/TESTING.md#the-docker-mirror
+[macos-lanes]: https://github.com/sushantmane/peeky/blob/main/docs/TESTING.md#the-macos-lanes-once-the-repository-is-public
 [design]: https://github.com/sushantmane/peeky/blob/main/docs/DESIGN.md
 [roadmap]: https://github.com/sushantmane/peeky/blob/main/docs/ROADMAP.md
 [testing]: https://github.com/sushantmane/peeky/blob/main/docs/TESTING.md
